@@ -1,0 +1,91 @@
+.wrapper {
+  --reader-height: 75vh;
+  --reader-gutter: 3rem;
+
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.viewport {
+  position: relative;
+  width: 100%;
+  height: var(--reader-height);
+  min-height: 320px;
+  overflow: hidden;
+  cursor: pointer;
+  /* Stop mobile browsers from hijacking horizontal swipes as back/forward
+     navigation, while still allowing normal vertical page scroll. */
+  touch-action: pan-y;
+  user-select: text;
+}
+
+.pages {
+  height: 100%;
+  padding: 0 1rem;
+
+  /* Virtual pages: content flows into columns. A fixed viewport height plus
+     multi-column layout makes the browser generate extra "overflow columns"
+     to the right for any content that doesn't fit, rather than growing the
+     box's height -- that's what turns continuous text into swipeable pages. */
+  column-count: 1;
+  column-gap: var(--reader-gutter);
+  column-fill: auto;
+
+  transition: transform 300ms ease;
+  will-change: transform;
+}
+
+@media (min-width: 768px) {
+  .pages {
+    column-count: 2;
+  }
+}
+
+/* Never slice a heading, paragraph, or image across a column break. */
+.pages h1,
+.pages h2,
+.pages h3,
+.pages p,
+.pages img {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid; /* Safari < 16 */
+  page-break-inside: avoid; /* legacy fallback */
+}
+
+.pages img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.controls button {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.controls button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.pageIndicator {
+  min-width: 4.5rem;
+  text-align: center;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}

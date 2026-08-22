@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light dark;
+
+  --font-scale: 1;
+
+  /* Light theme (default) */
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666666;
+  --border: #e2e2e2;
+  --accent: #2554c7;
+  --accent-contrast: #ffffff;
+  --focus-ring: #2554c7;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #121212;
+  --fg: #f2f2f2;
+  --muted: #b3b3b3;
+  --border: #3a3a3a;
+  --accent: #8ab4ff;
+  --accent-contrast: #0b1a33;
+  --focus-ring: #8ab4ff;
+}
+
+:root[data-theme="high-contrast"] {
+  color-scheme: dark;
+
+  --bg: #000000;
+  --fg: #ffffff;
+  --muted: #ffffff;
+  --border: #ffffff;
+  --accent: #ffff00;
+  --accent-contrast: #000000;
+  --focus-ring: #ffff00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  /* Drives the "Text size" control in the accessibility panel. 100% keeps
+     the user's own browser/OS font-size preference as the baseline. */
+  font-size: calc(100% * var(--font-scale, 1));
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--fg);
+  /* Leaves room for the fixed accessibility bar so it never covers content. */
+  padding-bottom: 4.5rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* A clear, high-contrast-safe focus indicator for every interactive
+   element -- required for WCAG 2.1 AA (SC 2.4.7 Focus Visible). Never
+   suppressed with outline: none anywhere in this project. */
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}

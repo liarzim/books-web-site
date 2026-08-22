@@ -1,0 +1,49 @@
+.main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+  text-align: center;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin: 0.5rem 0 2.5rem;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 220px;
+  padding: 1.75rem 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  transition:
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+.card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.cardTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.cardDescription {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
