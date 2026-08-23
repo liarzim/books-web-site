@@ -65,7 +65,12 @@ export default async function BookPage({ params }: PageProps) {
 
       {/* Markdown body, parsed with gray-matter + rendered to HTML with
           remark in lib/books.ts, then paginated into virtual pages here. */}
-      <Reader contentHtml={book.contentHtml} slug={slug} dir={dir} />
+      <Reader
+        contentHtml={book.contentHtml}
+        slug={slug}
+        dir={dir}
+        toc={book.toc}
+      />
     </article>
   );
 }

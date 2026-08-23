@@ -109,6 +109,27 @@ ${coverImageHtml}
 }
 
 /**
+ * Stamps `id="<anchor>"` onto each top-level chapter heading (`<h1>`) in
+ * the rendered body, in document order, matching them up 1:1 with the
+ * frontmatter `toc` array. This is what lets the Reader jump straight to a
+ * chapter: it can later find `#chapter-N` in the DOM and read its position
+ * without needing the book split into separate per-chapter documents.
+ *
+ * A no-op (returns bodyHtml unchanged) for books with no `toc` entry, so
+ * older books without a table of contents keep working exactly as before.
+ */
+function injectHeadingIds(bodyHtml: string, toc: TocEntry[] | undefined): string {
+  if (!toc || toc.length === 0) return bodyHtml;
+
+  let i = 0;
+  return bodyHtml.replace(/<h1(?=[ >])/g, (match) => {
+    const anchor = toc[i]?.anchor;
+    i += 1;
+    return anchor ? `<h1 id="${escapeHtml(anchor)}"` : match;
+  });
+}
+
+/**
  * Full book, including frontmatter and the Markdown body rendered to HTML.
  * Returns null if no Markdown file matches the given slug.
  */
@@ -124,7 +145,8 @@ export async function getBookBySlug(slug: string): Promise<Book | null> {
   const frontmatter = data as BookFrontmatter;
 
   const processedContent = await remark().use(html).process(content);
-  const contentHtml = buildCoverPageHtml(frontmatter) + processedContent.toString();
+  const bodyHtml = injectHeadingIds(processedContent.toString(), frontmatter.toc);
+  const contentHtml = buildCoverPageHtml(frontmatter) + bodyHtml;
 
   return {
     ...frontmatter,
