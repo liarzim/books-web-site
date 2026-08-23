@@ -8,11 +8,11 @@ A Jamstack book catalog built with Next.js (App Router), designed to deploy to V
 - **TypeScript**
 - **gray-matter** — parses Markdown frontmatter
 - **remark** / **remark-html** — renders Markdown body to HTML
-- **Decap CMS** — visual editor for the Markdown files, at `/admin`
+- A custom admin editor at `/admin` — Google sign-in (allowlisted), commits straight to GitHub
 
 ## Content model
 
-Each book is one Markdown file in `content/books/`, named `<slug>.md`. The **filename is the routing source of truth** — it's what `/books/<slug>` actually resolves against, even though `slug` also exists as a frontmatter field editors see in the CMS (Decap uses it only to name the file when an entry is first created; renaming it afterwards doesn't rename the file or change the live URL).
+Each book is one Markdown file in `content/books/`, named `<slug>.md`. The **filename is the routing source of truth** — it's what `/books/<slug>` actually resolves against, even though `slug` also exists as a frontmatter field editors see in the admin form (it's used only to name the file when a book is first created; the field is locked after that, since renaming it wouldn't rename the file or change the live URL).
 
 ```md
 ---
@@ -56,21 +56,51 @@ Push this repo to GitHub/GitLab/Bitbucket and import it in Vercel — no configu
 
 ## Adding a book
 
-Drop a new `<slug>.md` file into `content/books/` with the frontmatter shown above, then rebuild (`npm run build`) or redeploy. It will automatically appear on `/books` and at `/books/<slug>`. Or use the CMS below instead of editing files by hand.
+Drop a new `<slug>.md` file into `content/books/` with the frontmatter shown above, then rebuild (`npm run build`) or redeploy. It will automatically appear on `/books` and at `/books/<slug>`. Or use the admin editor below instead of editing files by hand.
 
-## Content editing via Decap CMS
+## Content editing via the admin panel
 
-`/admin` is a visual editor (Decap CMS) for the Markdown files in `content/books/`, backed by GitHub: every save becomes a commit to this repo, which triggers a normal Vercel redeploy. It needs a one-time setup before it will work:
+`/admin` is a custom editor for the Markdown files in `content/books/`. Editors sign in with **Google** (no GitHub account needed); saves are committed to this repo through GitHub's API using one shared, server-only credential, which then triggers a normal Vercel redeploy.
 
-1. **Create a GitHub OAuth App** at [github.com/settings/developers](https://github.com/settings/developers) → "New OAuth App":
-   - Homepage URL: your deployed site's origin (e.g. `https://books-web-site.vercel.app`)
-   - Authorization callback URL: `<that origin>/api/callback`
-2. **Set environment variables** — copy `.env.example` to `.env.local` for local testing, and add the same two keys in Vercel → Project Settings → Environment Variables for production:
-   - `GITHUB_OAUTH_CLIENT_ID`
-   - `GITHUB_OAUTH_CLIENT_SECRET` (from the OAuth App you just created)
-3. **Edit `public/admin/config.yml`** — replace the two placeholders near the top:
-   - `repo:` → this repo's `owner/repo-name`
-   - `base_url:` → the same deployed origin used above
-4. Deploy. Anyone who opens `/admin` and has push access to the repo can sign in with GitHub and edit books through the form; anyone without repo access can authenticate but won't be able to save (GitHub itself enforces that, not this app).
+This intentionally trades away Decap CMS's polished editor (rich-text widget, drag-and-drop image upload) for something with no GitHub-account requirement for editors and no extra hosted service — the Markdown body is a plain textarea, and cover images are pasted in as a URL/path rather than uploaded through the form.
 
-Cover images uploaded through the CMS land in `public/images/books/`.
+Every save is attributed to whichever Google account made it in the commit message, but the actual GitHub commit author is the shared service account — GitHub's own history won't show individual editors by username.
+
+### Members and roles
+
+Who can sign in, and what they can do once they're in, is controlled by `content/members.json` — a JSON file in the repo, the same place books live, editable at `/admin/members`:
+
+```json
+[
+  {
+    "email": "you@gmail.com",
+    "role": "admin",
+    "addedAt": "2026-08-23T00:00:00.000Z",
+    "addedBy": "setup"
+  }
+]
+```
+
+Two roles:
+
+- **admin** — everything an editor can do, plus adding, removing, and re-role-ing members at `/admin/members`.
+- **editor** — create, edit, and delete books. No access to the members page.
+
+Adding, removing, or re-roling a member is itself a commit to `members.json` (via the same GitHub API path books use), so it takes effect after the next deploy — usually under a minute on Vercel — and the affected person may need to sign out and back in to pick up a role change. The system won't let you remove or demote the last remaining admin, so you can't lock yourself out that way.
+
+`ADMIN_ALLOWED_EMAILS` / `ADMIN_ALLOWED_DOMAIN` (below) are a separate **failsafe**, not the real member list — they're only consulted for an email that isn't in `members.json` at all, and always grant the `admin` role. Keep your own email there permanently in case `members.json` is ever empty or broken.
+
+### One-time setup
+
+1. **Create a Google OAuth Client** at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) → "Create Credentials" → "OAuth client ID" → Application type: Web application.
+   - Authorized redirect URI: `<your deployed origin>/api/admin/auth/callback`
+   - You'll also need to configure the OAuth consent screen if you haven't already (Google requires this before the client ID will work).
+2. **Create a GitHub fine-grained token** at [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new), scoped to **only this repo**, with **Contents: Read and write** permission. This is the one shared credential the server uses to commit — it's never exposed to editors.
+3. **Set environment variables** — copy `.env.example` to `.env.local` for local testing, and add the same keys in Vercel → Project Settings → Environment Variables for production:
+   - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+   - `ADMIN_ALLOWED_EMAILS` — your own email, as the lockout failsafe described above (not the general way to add people)
+   - `ADMIN_ALLOWED_DOMAIN` — optional
+   - `ADMIN_SESSION_SECRET` — any long random string (the `.env.example` comment has a one-liner to generate one)
+   - `GITHUB_ADMIN_TOKEN`, `GITHUB_REPO` (`owner/repo-name`), `GITHUB_BRANCH`
+4. **Seed the first admin(s)** by editing `content/members.json` before your first deploy (a one-admin seed is already included in this repo — update the email, or add a second entry for a second admin). After that, admins can add more people from `/admin/members` instead of hand-editing the file.
+5. Deploy. Anyone listed in `content/members.json` (or matching the failsafe) can sign in at `/admin` with their Google account.

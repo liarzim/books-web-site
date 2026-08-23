@@ -1,0 +1,74 @@
+.main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+}
+
+.centered {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+  text-align: center;
+}
+
+.subtitle {
+  color: var(--muted);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.signInButton,
+.button {
+  display: inline-block;
+  margin-top: 1.5rem;
+  padding: 0.6rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.secondaryButton {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.bookList {
+  list-style: none;
+  padding: 0;
+  margin-top: 1.5rem;
+}
+
+.bookRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.bookMeta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
