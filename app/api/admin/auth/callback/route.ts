@@ -64,10 +64,15 @@ async function verifyGoogleIdToken(
 
   // Cast via the function's own parameter type rather than naming Node's
   // JWK type directly -- avoids depending on the exact type export name.
+  // Routed through `unknown` first: Node's real JsonWebKey type carries a
+  // string index signature that our plain GoogleJwk interface doesn't, so
+  // TypeScript's strict type-checker (as opposed to a loose `tsc --noEmit`
+  // without the real @types/node resolved) rejects a direct cast as
+  // "insufficient overlap" -- unknown-mediated casts sidestep that check.
   const publicKey = createPublicKey({
     key: jwk,
     format: "jwk",
-  } as Parameters<typeof createPublicKey>[0]);
+  } as unknown as Parameters<typeof createPublicKey>[0]);
 
   const verifier = createVerify("RSA-SHA256");
   verifier.update(`${headerB64}.${payloadB64}`);
