@@ -101,6 +101,24 @@
   display: block;
 }
 
+/* Chapters are forced to start at the top of a fresh virtual page by JS
+   (see enforceChapterPageStarts in Reader.tsx), not by CSS. `break-before:
+   column` looks like the obvious tool for this, but empirically it is NOT
+   reliable on a real, long book: past a few hundred generated columns,
+   Chromium's multicol fragmentation silently drops most forced breaks in
+   a way that depends on exactly what content precedes each one -- it was
+   verified across the full real book that this left the majority of
+   chapters starting mid-page regardless of which break-before/-after
+   variant was used. The JS approach measures actual layout and inserts a
+   precisely-sized spacer, which is reliable regardless of surrounding
+   content. `margin-top: 0` here just makes "is this heading already at
+   the top of its column" an exact, zero-tolerance offsetTop check for
+   that JS rather than one that has to account for the browser's default
+   heading margin. */
+.pages h1 {
+  margin-top: 0;
+}
+
 .controls {
   display: flex;
   align-items: center;

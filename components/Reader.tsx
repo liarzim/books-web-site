@@ -39,6 +39,77 @@ interface ReaderProps {
 
 const SWIPE_THRESHOLD_PX = 50;
 
+// Marks a spacer element inserted by enforceChapterPageStarts, so a later
+// call can find and remove its own previous work before recomputing.
+const CHAPTER_SPACER_ATTR = "data-chapter-spacer";
+
+// Safety cap on how many correction rounds enforceChapterPageStarts will
+// run (see that function). Empirically a 59-chapter/~1000-page book
+// converges in 4-5 rounds; this just bounds the worst case so a
+// pathological document can't loop indefinitely.
+const MAX_CHAPTER_SPACER_ROUNDS = 8;
+
+/**
+ * Makes every chapter start at the top of a fresh virtual page, instead of
+ * wherever it happens to land after the previous chapter's last paragraph.
+ *
+ * The obvious tool for this is CSS's `break-before: column` on each
+ * chapter heading -- and Reader.module.css tried exactly that first. It is
+ * NOT reliable here: verified empirically against the full real book (59
+ * chapters, ~1000 virtual pages), Chromium's multicol fragmentation
+ * silently drops most forced breaks once a document reaches that scale, in
+ * a way that depends on exactly what content happens to precede each one
+ * -- every break-before/-after variant tried (including the legacy
+ * `page-break-before` and `-webkit-column-break-before` aliases) left the
+ * majority of chapters starting mid-page. This does the same job from JS
+ * instead, which is reliable regardless of surrounding content: measure
+ * how far into its current column each chapter heading actually landed,
+ * and insert a spacer sized to exactly consume the rest of that column so
+ * the heading overflows into a fresh one.
+ *
+ * Inserting a spacer before chapter N shifts every chapter after it too,
+ * so one pass isn't enough -- chapter N+1 may only need a spacer once N's
+ * has already been inserted. This iterates in rounds instead of correcting
+ * one heading at a time: within a round, every heading's offsetTop is read
+ * BEFORE any spacer is written for that round (a batched read), and then
+ * every needed spacer is inserted with no reads in between (a batched
+ * write). Interleaving a read after each individual write -- i.e. doing
+ * this heading-by-heading -- forces a full-document layout reflow per
+ * heading, which measured over 11 SECONDS on this book; batching each
+ * round down to a single reflow (one for the round's reads, implicitly one
+ * more triggered by the next round's reads) brought that under a second.
+ */
+function enforceChapterPageStarts(pages: HTMLElement) {
+  const columnHeight = pages.clientHeight;
+  if (!columnHeight) return;
+
+  pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
+
+  for (let round = 0; round < MAX_CHAPTER_SPACER_ROUNDS; round += 1) {
+    const headings = Array.from(
+      pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]'),
+    );
+    // Batched read.
+    const offsets = headings.map((heading) => heading.offsetTop);
+
+    // Batched write.
+    let insertedAny = false;
+    headings.forEach((heading, i) => {
+      const offset = offsets[i];
+      if (offset > 1 && offset < columnHeight) {
+        const spacer = document.createElement("div");
+        spacer.setAttribute(CHAPTER_SPACER_ATTR, "true");
+        spacer.setAttribute("aria-hidden", "true");
+        spacer.style.height = `${columnHeight - offset}px`;
+        heading.parentNode?.insertBefore(spacer, heading);
+        insertedAny = true;
+      }
+    });
+
+    if (!insertedAny) break;
+  }
+}
+
 // How long the transient page-turn "flip flair" animation runs. Kept in
 // one place since both the CSS keyframes (Reader.module.css) and the JS
 // class-removal timer below need to agree on it.
@@ -97,6 +168,13 @@ export default function Reader({
 
     const width = viewport.clientWidth;
     if (width === 0) return;
+
+    // Must run before any of the measurements below: it mutates the DOM
+    // (inserting/removing spacers), and every measurement here -- page
+    // count, chapter positions -- needs to reflect the corrected layout,
+    // not the pre-correction one. See enforceChapterPageStarts for why
+    // this can't just be a CSS rule.
+    enforceChapterPageStarts(pages);
 
     setPageWidth(width);
 
@@ -184,14 +262,27 @@ export default function Reader({
   }, [recalculate]);
 
   // Images loading in after initial layout can change how content flows
-  // into columns, so recount once each one is ready.
+  // into columns, so recount once each one is ready. Debounced: a book's
+  // images tend to finish loading in a burst right after mount, and
+  // recalculate() is no longer cheap now that it also re-runs
+  // enforceChapterPageStarts -- reacting to each image individually would
+  // mean paying that cost once per image instead of once for the whole
+  // burst.
   useEffect(() => {
     const images = pagesRef.current?.querySelectorAll("img") ?? [];
     const pending = Array.from(images).filter((img) => !img.complete);
+    if (pending.length === 0) return;
 
-    pending.forEach((img) => img.addEventListener("load", recalculate));
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRecalculate = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(recalculate, 200);
+    };
+
+    pending.forEach((img) => img.addEventListener("load", scheduleRecalculate));
     return () => {
-      pending.forEach((img) => img.removeEventListener("load", recalculate));
+      if (timer) clearTimeout(timer);
+      pending.forEach((img) => img.removeEventListener("load", scheduleRecalculate));
     };
   }, [recalculate, contentHtml]);
 
