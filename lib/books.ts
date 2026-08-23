@@ -22,10 +22,11 @@ export interface BookFrontmatter {
   language?: string;
   toc?: TocEntry[];
   /**
-   * A CMS-authored slug, used by Decap only to name the file when an entry
-   * is first created (content/books/<slug>.md). It is NOT the routing
-   * source of truth after that -- the filename is. See getAllBooksMeta /
-   * getBookBySlug below, which always let the filename-derived slug win.
+   * A CMS-authored slug, used by the admin editor only to name the file
+   * when a book is first created (content/books/<slug>.md). It is NOT the
+   * routing source of truth after that -- the filename is. See
+   * getAllBooksMeta / getBookBySlug below, which always let the
+   * filename-derived slug win.
    */
   slug?: string;
 }
@@ -93,5 +94,32 @@ export async function getBookBySlug(slug: string): Promise<Book | null> {
     ...(data as BookFrontmatter),
     slug,
     contentHtml,
+  };
+}
+
+export interface BookSource extends BookMeta {
+  /** Raw, unrendered Markdown body -- what the admin editor loads/saves. */
+  rawBody: string;
+}
+
+/**
+ * Like getBookBySlug, but returns the raw Markdown body instead of
+ * rendered HTML. Used by the admin editor: editing rendered HTML would be
+ * wrong, since the file on disk (and in the GitHub commit) is Markdown.
+ */
+export function getBookSource(slug: string): BookSource | null {
+  const fullPath = path.join(booksDirectory, `${slug}.md`);
+
+  if (!fs.existsSync(fullPath)) {
+    return null;
+  }
+
+  const fileContents = fs.readFileSync(fullPath, "utf8");
+  const { data, content } = matter(fileContents);
+
+  return {
+    ...(data as BookFrontmatter),
+    slug,
+    rawBody: content.trim(),
   };
 }

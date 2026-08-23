@@ -15,15 +15,12 @@ export default function Home() {
           </span>
         </Link>
 
-        {/* /admin is a static Decap CMS page served from public/admin, not
-            a Next.js route -- a plain anchor gives it a normal full-page
-            navigation instead of an App Router client transition. */}
-        <a href="/admin" className={styles.card}>
+        <Link href="/admin" className={styles.card}>
           <span className={styles.cardTitle}>Admin</span>
           <span className={styles.cardDescription}>
-            Sign in with GitHub to edit books
+            Sign in with Google to edit books
           </span>
-        </a>
+        </Link>
       </nav>
     </main>
   );
