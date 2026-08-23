@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
+import type { NextRequest } from "next/server";
 import type { Role } from "@/lib/members";
 
 // Hand-rolled signed session cookie (no JWT library needed): a base64url
@@ -85,4 +86,23 @@ export function verifySessionToken(token: string | undefined | null): AdminSessi
 export async function getAdminSession(): Promise<AdminSession | null> {
   const store = await cookies();
   return verifySessionToken(store.get(SESSION_COOKIE_NAME)?.value);
+}
+
+/**
+ * The exact "/api/admin/auth/callback" URL to send Google, on both the
+ * initial authorize request and the token exchange -- Google requires the
+ * two to match byte-for-byte. Deriving this from `request.url` is NOT
+ * safe on Vercel: every deployment gets its own unique preview URL (e.g.
+ * "books-web-site-<hash>-<team>.vercel.app") in addition to the stable
+ * production one, and only whichever URL(s) are registered in Google
+ * Cloud Console will work -- visiting via any other URL fails with
+ * "Error 400: redirect_uri_mismatch". SITE_URL pins this to one fixed,
+ * known origin (your production domain) regardless of which URL someone
+ * actually browsed to. Falls back to request.url when SITE_URL isn't
+ * set, so local dev keeps working without extra config.
+ */
+export function getAuthCallbackUrl(request: NextRequest): string {
+  const configuredOrigin = process.env.SITE_URL?.trim().replace(/\/+$/, "");
+  const origin = configuredOrigin || new URL(request.url).origin;
+  return `${origin}/api/admin/auth/callback`;
 }

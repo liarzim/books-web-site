@@ -1,5 +1,6 @@
 import { randomBytes } from "crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import { getAuthCallbackUrl } from "@/lib/adminAuth";
 
 export const runtime = "nodejs";
 
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest) {
   }
 
   const state = randomBytes(16).toString("hex");
-  const redirectUri = new URL("/api/admin/auth/callback", request.url).toString();
+  const redirectUri = getAuthCallbackUrl(request);
 
   const authorizeUrl = new URL(GOOGLE_AUTHORIZE_URL);
   authorizeUrl.searchParams.set("client_id", clientId);

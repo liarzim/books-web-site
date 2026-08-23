@@ -92,15 +92,17 @@ Adding, removing, or re-roling a member is itself a commit to `members.json` (vi
 
 ### One-time setup
 
-1. **Create a Google OAuth Client** at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) → "Create Credentials" → "OAuth client ID" → Application type: Web application.
-   - Authorized redirect URI: `<your deployed origin>/api/admin/auth/callback`
+1. **Decide your stable production URL** — the one fixed domain you'll always use to reach the site (e.g. `https://books-web-site.vercel.app`, or a custom domain if you add one later). This matters because Vercel gives every individual deployment its own unique preview URL in addition to that stable one, and Google will only accept a sign-in redirect back to a URL you've explicitly registered.
+2. **Create a Google OAuth Client** at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) → "Create Credentials" → "OAuth client ID" → Application type: Web application.
+   - Authorized redirect URI: `<your stable production URL>/api/admin/auth/callback`
    - You'll also need to configure the OAuth consent screen if you haven't already (Google requires this before the client ID will work).
-2. **Create a GitHub fine-grained token** at [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new), scoped to **only this repo**, with **Contents: Read and write** permission. This is the one shared credential the server uses to commit — it's never exposed to editors.
-3. **Set environment variables** — copy `.env.example` to `.env.local` for local testing, and add the same keys in Vercel → Project Settings → Environment Variables for production:
+3. **Create a GitHub fine-grained token** at [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new), scoped to **only this repo**, with **Contents: Read and write** permission. This is the one shared credential the server uses to commit — it's never exposed to editors.
+4. **Set environment variables** — copy `.env.example` to `.env.local` for local testing, and add the same keys in Vercel → Project Settings → Environment Variables for production:
+   - `SITE_URL` — your stable production URL from step 1, no trailing slash. This pins the Google sign-in redirect to that one URL no matter which specific deployment URL someone visits — without it, opening the app via a preview/deployment-specific link breaks sign-in with "Error 400: redirect_uri_mismatch."
    - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
    - `ADMIN_ALLOWED_EMAILS` — your own email, as the lockout failsafe described above (not the general way to add people)
    - `ADMIN_ALLOWED_DOMAIN` — optional
    - `ADMIN_SESSION_SECRET` — any long random string (the `.env.example` comment has a one-liner to generate one)
    - `GITHUB_ADMIN_TOKEN`, `GITHUB_REPO` (`owner/repo-name`), `GITHUB_BRANCH`
-4. **Seed the first admin(s)** by editing `content/members.json` before your first deploy (a one-admin seed is already included in this repo — update the email, or add a second entry for a second admin). After that, admins can add more people from `/admin/members` instead of hand-editing the file.
-5. Deploy. Anyone listed in `content/members.json` (or matching the failsafe) can sign in at `/admin` with their Google account.
+5. **Seed the first admin(s)** by editing `content/members.json` before your first deploy (a one-admin seed is already included in this repo — update the email, or add a second entry for a second admin). After that, admins can add more people from `/admin/members` instead of hand-editing the file.
+6. Deploy, always via your stable production URL from step 1 (not a per-deployment preview link). Anyone listed in `content/members.json` (or matching the failsafe) can sign in at `/admin` with their Google account.

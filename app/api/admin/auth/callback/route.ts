@@ -2,6 +2,7 @@ import { createPublicKey, createVerify } from "crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createSessionToken,
+  getAuthCallbackUrl,
   SESSION_COOKIE_NAME,
   SESSION_MAX_AGE_SECONDS,
 } from "@/lib/adminAuth";
@@ -116,7 +117,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const redirectUri = new URL("/api/admin/auth/callback", request.url).toString();
+  const redirectUri = getAuthCallbackUrl(request);
 
   const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
