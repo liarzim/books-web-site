@@ -73,6 +73,41 @@ export function getAllBooksMeta(): BookMeta[] {
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * A standalone title/cover page, prepended to the book's rendered HTML so
+ * it becomes the Reader's first virtual page rather than chapter 1. Built
+ * as a raw HTML string (not JSX) because it has to live inside the same
+ * `contentHtml` blob the Reader paginates via CSS columns -- a page
+ * rendered outside that flow (e.g. in BookPage's own JSX) can't become
+ * "page 1" of the swipeable reader.
+ *
+ * `break-after: column` forces the multi-column layout in
+ * Reader.module.css to start the real body in a fresh column regardless
+ * of how much vertical space is left in this one -- the same mechanism
+ * print stylesheets use for `break-after: page`, just for columns.
+ */
+function buildCoverPageHtml(meta: BookFrontmatter): string {
+  const coverImageHtml = meta.coverImage
+    ? `<img src="${escapeHtml(meta.coverImage)}" alt="" style="max-width:80%;max-height:45%;object-fit:contain;margin:0 auto 1.5rem;display:block;border-radius:4px;" />`
+    : "";
+  const yearText = meta.publishedYear ? ` · ${meta.publishedYear}` : "";
+
+  return `<div style="break-after:column;-webkit-column-break-after:always;page-break-after:always;min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:1rem 0;">
+${coverImageHtml}
+<h1 style="margin:0 0 0.5rem;">${escapeHtml(meta.title)}</h1>
+<p style="color:var(--muted);margin:0;">${escapeHtml(meta.author)}${escapeHtml(yearText)}</p>
+</div>`;
+}
+
 /**
  * Full book, including frontmatter and the Markdown body rendered to HTML.
  * Returns null if no Markdown file matches the given slug.
@@ -86,12 +121,13 @@ export async function getBookBySlug(slug: string): Promise<Book | null> {
 
   const fileContents = fs.readFileSync(fullPath, "utf8");
   const { data, content } = matter(fileContents);
+  const frontmatter = data as BookFrontmatter;
 
   const processedContent = await remark().use(html).process(content);
-  const contentHtml = processedContent.toString();
+  const contentHtml = buildCoverPageHtml(frontmatter) + processedContent.toString();
 
   return {
-    ...(data as BookFrontmatter),
+    ...frontmatter,
     slug,
     contentHtml,
   };

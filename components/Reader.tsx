@@ -17,6 +17,16 @@ interface ReaderProps {
   contentHtml: string;
   /** Book slug, used as the localStorage key for the saved read position. */
   slug: string;
+  /**
+   * Text direction of the book's content -- see lib/rtl.ts. This isn't
+   * just cosmetic: CSS multi-column layout overflows to the RIGHT
+   * (increasing x) for `direction: ltr` content but to the LEFT
+   * (decreasing x) for `direction: rtl` content, since that's the
+   * direction the columns actually fill in. The page-turn transform below
+   * has to move the opposite way to match, or every page past the first
+   * lands on empty overflow space instead of the next column of text.
+   */
+  dir?: "rtl" | "ltr";
 }
 
 const SWIPE_THRESHOLD_PX = 50;
@@ -27,7 +37,11 @@ const SWIPE_THRESHOLD_PX = 50;
 const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
-export default function Reader({ contentHtml, slug }: ReaderProps) {
+export default function Reader({ contentHtml, slug, dir = "ltr" }: ReaderProps) {
+  // See the ReaderProps.dir comment: RTL columns overflow leftward, so the
+  // sign of the page-turn transform has to flip to follow them there.
+  const pageAxisSign = dir === "rtl" ? 1 : -1;
+
   const viewportRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
 
@@ -200,7 +214,7 @@ export default function Reader({ contentHtml, slug }: ReaderProps) {
         <div
           ref={pagesRef}
           className={styles.pages}
-          style={{ transform: `translateX(-${currentPage * pageWidth}px)` }}
+          style={{ transform: `translateX(${pageAxisSign * currentPage * pageWidth}px)` }}
           // Content comes from Markdown rendered server-side in lib/books.ts.
           dangerouslySetInnerHTML={{ __html: contentHtml }}
         />
