@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import Reader from "@/components/Reader";
 import { getBookBySlug, getBookSlugs } from "@/lib/books";
+import { bookDir } from "@/lib/rtl";
 
 type PageParams = { slug: string };
 
@@ -41,8 +42,17 @@ export default async function BookPage({ params }: PageProps) {
     notFound();
   }
 
+  // `dir` is set on the whole article (not just the Reader's HTML) so the
+  // title and author line line up correctly too, and so it's inherited by
+  // everything the Reader renders via dangerouslySetInnerHTML -- the CSS
+  // `direction` property inherits down the tree from a `dir` attribute.
+  const dir = bookDir(book.language);
+
   return (
-    <article style={{ maxWidth: 960, margin: "0 auto", padding: "3rem 1.5rem" }}>
+    <article
+      dir={dir}
+      style={{ maxWidth: 960, margin: "0 auto", padding: "3rem 1.5rem" }}
+    >
       <p>
         <Link href="/books">&larr; All books</Link>
       </p>

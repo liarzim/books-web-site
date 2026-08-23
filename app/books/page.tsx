@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getAllBooksMeta } from "@/lib/books";
+import { bookDir } from "@/lib/rtl";
 
 export default function BooksIndexPage() {
   const books = getAllBooksMeta();
@@ -18,19 +19,43 @@ export default function BooksIndexPage() {
           {books.map((book) => (
             <li
               key={book.slug}
+              dir={bookDir(book.language)}
               style={{
+                display: "flex",
+                gap: "1rem",
                 padding: "1rem 0",
                 borderBottom: "1px solid var(--border)",
               }}
             >
-              <Link href={`/books/${book.slug}`}>
-                <strong>{book.title}</strong>
-              </Link>
-              <div style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
-                {book.author}
-                {book.publishedYear ? ` · ${book.publishedYear}` : ""}
+              {book.coverImage && (
+                // eslint-disable-next-line @next/next/no-img-element -- book
+                // covers are arbitrary CMS-provided paths, not build-time
+                // known assets, so next/image's static optimization doesn't
+                // apply here.
+                <img
+                  src={book.coverImage}
+                  alt=""
+                  width={56}
+                  height={80}
+                  style={{
+                    width: 56,
+                    height: 80,
+                    objectFit: "cover",
+                    borderRadius: 4,
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+              <div>
+                <Link href={`/books/${book.slug}`}>
+                  <strong>{book.title}</strong>
+                </Link>
+                <div style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+                  {book.author}
+                  {book.publishedYear ? ` · ${book.publishedYear}` : ""}
+                </div>
+                {book.excerpt && <p>{book.excerpt}</p>}
               </div>
-              {book.excerpt && <p>{book.excerpt}</p>}
             </li>
           ))}
         </ul>
