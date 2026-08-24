@@ -44,14 +44,22 @@ const SWIPE_THRESHOLD_PX = 50;
 const CHAPTER_SPACER_ATTR = "data-chapter-spacer";
 
 // Safety cap on how many correction rounds enforceChapterPageStarts will
-// run (see that function). Empirically a 59-chapter/~1000-page book
-// converges in 4-5 rounds; this just bounds the worst case so a
-// pathological document can't loop indefinitely.
-const MAX_CHAPTER_SPACER_ROUNDS = 8;
+// run (see that function). This has to scale roughly 1:1 with the number
+// of chapters -- NOT a small constant -- because forcing a chapter to
+// start a fresh SPREAD (see the "starts mid-spread" case below) shifts
+// every later chapter by a whole column too, which flips THEIR spread
+// parity and can make a chapter that was already fine need a correction
+// next round. Fixing chapter N can un-fix chapter N+1, whose fix un-fixes
+// N+2, and so on -- empirically this cascades through the full 59-chapter
+// real book and only finishes converging around round 56. 100 leaves
+// headroom for a somewhat longer book without the cap silently starting
+// to matter.
+const MAX_CHAPTER_SPACER_ROUNDS = 100;
 
 /**
- * Makes every chapter start at the top of a fresh virtual page, instead of
- * wherever it happens to land after the previous chapter's last paragraph.
+ * Makes every chapter start at the top of a fresh virtual PAGE (not just a
+ * fresh CSS column), instead of wherever it happens to land after the
+ * previous chapter's last paragraph.
  *
  * The obvious tool for this is CSS's `break-before: column` on each
  * chapter heading -- and Reader.module.css tried exactly that first. It is
@@ -67,21 +75,64 @@ const MAX_CHAPTER_SPACER_ROUNDS = 8;
  * and insert a spacer sized to exactly consume the rest of that column so
  * the heading overflows into a fresh one.
  *
+ * There are two distinct ways a heading can be "mid-page", and both need
+ * correcting:
+ *
+ * 1. Mid-COLUMN: the heading isn't even at the top of its own CSS column
+ *    (`offsetTop` is somewhere in the middle). This is the only case that
+ *    exists at mobile width, where one column IS one page.
+ * 2. Mid-SPREAD (desktop only, where Reader.module.css sets
+ *    `column-count: 2`): the heading IS at the top of its column, but
+ *    that column is the SECOND of the two columns making up one visible
+ *    page -- so it shares a page with whatever precedes it (the tail of
+ *    the previous chapter, or, for chapter 1, the cover). Left alone,
+ *    this is what made the cover and chapter 1 visually share the first
+ *    page. Telling columns 1-of-2 and 2-of-2 apart needs a column index
+ *    across the WHOLE flow, not just "is offsetTop 0" -- see the
+ *    offsetLeft-based columnIndex math below, which needs the same
+ *    firstColumnOffsetLeft reference-point correction as recalculate()'s
+ *    chapterPages calculation, for the same reason (see the comment
+ *    there).
+ *
  * Inserting a spacer before chapter N shifts every chapter after it too,
- * so one pass isn't enough -- chapter N+1 may only need a spacer once N's
- * has already been inserted. This iterates in rounds instead of correcting
- * one heading at a time: within a round, every heading's offsetTop is read
- * BEFORE any spacer is written for that round (a batched read), and then
- * every needed spacer is inserted with no reads in between (a batched
- * write). Interleaving a read after each individual write -- i.e. doing
- * this heading-by-heading -- forces a full-document layout reflow per
- * heading, which measured over 11 SECONDS on this book; batching each
- * round down to a single reflow (one for the round's reads, implicitly one
- * more triggered by the next round's reads) brought that under a second.
+ * so one pass isn't enough. This iterates in rounds instead of correcting
+ * one heading at a time: within a round, every heading's offsetTop AND
+ * offsetLeft are read BEFORE any spacer is written for that round (a
+ * batched read), and then every needed spacer is inserted with no reads in
+ * between (a batched write). Interleaving a read after each individual
+ * write -- i.e. doing this heading-by-heading -- forces a full-document
+ * layout reflow per heading, which measured over 11 SECONDS on this book;
+ * batching each round down to a single reflow (one for the round's reads,
+ * implicitly one more triggered by the next round's reads) brought the
+ * column-only version of this under a second. Adding the mid-spread case
+ * makes the corrections cascade much further (see
+ * MAX_CHAPTER_SPACER_ROUNDS above), which costs more rounds and measured
+ * at ~3.5 seconds on the real book at desktop width -- still far better
+ * than the 11-second naive version, but a real, user-visible cost worth
+ * knowing about if pagination setup ever needs to feel instant.
  */
 function enforceChapterPageStarts(pages: HTMLElement) {
   const columnHeight = pages.clientHeight;
   if (!columnHeight) return;
+
+  // How many CSS columns make up one visible page (spread) at the current
+  // viewport width -- 1 on mobile, 2 at the desktop (min-width: 768px)
+  // breakpoint in Reader.module.css. Read from the computed style rather
+  // than assumed, so this keeps working if that breakpoint/column-count
+  // ever changes.
+  const columnsPerSpread = parseInt(getComputedStyle(pages).columnCount, 10) || 1;
+  const spreadWidth = pages.clientWidth;
+  if (!spreadWidth) return;
+  const columnStride = spreadWidth / columnsPerSpread;
+
+  // Reference point for "which column, overall, is this": the cover is
+  // always the first thing in the flow (lib/books.ts's buildCoverPageHtml
+  // is unconditionally prepended), so its offsetLeft is column index 0.
+  // See the comment on recalculate()'s positions calculation for why this
+  // reference point -- not zero -- has to be subtracted before dividing.
+  const firstColumnOffsetLeft = pages.firstElementChild
+    ? (pages.firstElementChild as HTMLElement).offsetLeft
+    : 0;
 
   pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
 
@@ -90,17 +141,28 @@ function enforceChapterPageStarts(pages: HTMLElement) {
       pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]'),
     );
     // Batched read.
-    const offsets = headings.map((heading) => heading.offsetTop);
+    const measurements = headings.map((heading) => ({
+      offsetTop: heading.offsetTop,
+      offsetLeft: heading.offsetLeft,
+    }));
 
     // Batched write.
     let insertedAny = false;
     headings.forEach((heading, i) => {
-      const offset = offsets[i];
-      if (offset > 1 && offset < columnHeight) {
+      const { offsetTop, offsetLeft } = measurements[i];
+      const midColumn = offsetTop > 1 && offsetTop < columnHeight;
+
+      const columnIndex = Math.round(
+        Math.abs(offsetLeft - firstColumnOffsetLeft) / columnStride,
+      );
+      const startsMidSpread =
+        columnsPerSpread > 1 && offsetTop <= 1 && columnIndex % columnsPerSpread !== 0;
+
+      if (midColumn || startsMidSpread) {
         const spacer = document.createElement("div");
         spacer.setAttribute(CHAPTER_SPACER_ATTR, "true");
         spacer.setAttribute("aria-hidden", "true");
-        spacer.style.height = `${columnHeight - offset}px`;
+        spacer.style.height = `${columnHeight - offsetTop}px`;
         heading.parentNode?.insertBefore(spacer, heading);
         insertedAny = true;
       }
@@ -186,14 +248,32 @@ export default function Reader({
     // by whatever `transform` is currently applied to it, so this doesn't
     // need to touch `currentPage` at all. It IS affected by reading
     // direction though: LTR columns overflow rightward, so a heading N
-    // pages in sits at offsetLeft ~= N * width (positive). RTL columns
-    // overflow leftward, so the same heading sits at offsetLeft
-    // ~= -N * width (negative). Taking the absolute value normalizes both
-    // cases back to the same positive 0-based page index.
+    // pages in sits at offsetLeft ~= N * width (positive) further than the
+    // FIRST page's offsetLeft. RTL columns overflow leftward, so the same
+    // heading sits at offsetLeft ~= N * width further negative.
+    //
+    // "Further than the first page's offsetLeft" matters: offsetLeft
+    // isn't zero at page 0. The very first column (the cover -- see
+    // buildCoverPageHtml in lib/books.ts, always prepended) sits wherever
+    // the browser places the un-transformed box's first column, which at
+    // desktop width (two columns per page) lands around half a page-width
+    // in, not 0. Dividing raw offsetLeft by width without subtracting that
+    // baseline first rounds every early heading down by roughly half a
+    // page -- invisible for a heading dozens of pages in, where that fixed
+    // offset is negligible, but it was rounding chapter 1 (which starts on
+    // page 1, right after the cover-only page 0) back down to page 0.
+    // firstColumnOffsetLeft is that baseline, read once from the same
+    // reference element (the cover) enforceChapterPageStarts uses for its
+    // own column-index math above.
     const headings = pages.querySelectorAll<HTMLElement>('[id^="chapter-"]');
+    const firstColumnOffsetLeft = pages.firstElementChild
+      ? (pages.firstElementChild as HTMLElement).offsetLeft
+      : 0;
     const positions: Record<string, number> = {};
     headings.forEach((heading) => {
-      const pageIndex = Math.round(Math.abs(heading.offsetLeft) / width);
+      const pageIndex = Math.round(
+        Math.abs(heading.offsetLeft - firstColumnOffsetLeft) / width,
+      );
       positions[heading.id] = Math.min(Math.max(pageIndex, 0), pageCount - 1);
     });
     setChapterPages(positions);
@@ -453,6 +533,17 @@ export default function Reader({
               aria-label="Table of contents"
               dir={dir}
             >
+              <div className={styles.tocHeader}>
+                <span className={styles.tocTitle}>Contents</span>
+                <button
+                  type="button"
+                  className={styles.tocClose}
+                  onClick={() => setIsTocOpen(false)}
+                  aria-label="Close table of contents"
+                >
+                  &times;
+                </button>
+              </div>
               <ol className={styles.tocList}>
                 {toc!.map((entry) => (
                   <li key={entry.anchor}>

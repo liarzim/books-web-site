@@ -90,10 +90,18 @@ function escapeHtml(value: string): string {
  * rendered outside that flow (e.g. in BookPage's own JSX) can't become
  * "page 1" of the swipeable reader.
  *
- * `break-after: column` forces the multi-column layout in
- * Reader.module.css to start the real body in a fresh column regardless
- * of how much vertical space is left in this one -- the same mechanism
- * print stylesheets use for `break-after: page`, just for columns.
+ * `min-height: 100%` fills the entire first column, so chapter 1's
+ * heading (the next thing in the flow) never lands in the same column as
+ * the cover. Getting it onto its own PAGE too (not just column -- at
+ * desktop width two columns make up one visible page) is handled by
+ * Reader.tsx's enforceChapterPageStarts, the same JS mechanism that keeps
+ * every other chapter off a shared page. An earlier version of this tried
+ * `break-after: column` here to force that on its own; it's gone now for
+ * the same reason it's gone from every chapter heading in
+ * Reader.module.css -- verified empirically unreliable at real-book scale,
+ * so relying on it here would just be the one CSS break-before/-after
+ * spot in the codebase quietly reintroducing a bug that's fixed
+ * everywhere else.
  */
 function buildCoverPageHtml(meta: BookFrontmatter): string {
   const coverImageHtml = meta.coverImage
@@ -101,7 +109,7 @@ function buildCoverPageHtml(meta: BookFrontmatter): string {
     : "";
   const yearText = meta.publishedYear ? ` · ${meta.publishedYear}` : "";
 
-  return `<div style="break-after:column;-webkit-column-break-after:always;page-break-after:always;min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:1rem 0;">
+  return `<div style="min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:1rem 0;">
 ${coverImageHtml}
 <h1 style="margin:0 0 0.5rem;">${escapeHtml(meta.title)}</h1>
 <p style="color:var(--muted);margin:0;">${escapeHtml(meta.author)}${escapeHtml(yearText)}</p>

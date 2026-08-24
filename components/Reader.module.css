@@ -206,6 +206,41 @@
   transform: translateX(0);
 }
 
+/* Explicit close affordance inside the panel itself -- overlay-click and
+   Escape both already close it, but neither is obvious just by looking at
+   an open panel, especially on desktop with a mouse. This makes
+   "collapsible" visible, not just possible. */
+.tocHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.5rem 0.5rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tocTitle {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.tocClose {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tocClose:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
 .tocList {
   list-style: none;
   margin: 0;
