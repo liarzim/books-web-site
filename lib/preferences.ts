@@ -8,6 +8,7 @@ export type Theme = "light" | "dark" | "high-contrast";
 const THEME_KEY = "reader:theme";
 const FONT_SCALE_KEY = "reader:font-scale";
 const POSITION_KEY_PREFIX = "reader:position:";
+const PAGINATION_KEY_PREFIX = "reader:pagination:";
 
 const THEME_VALUES: Theme[] = ["light", "dark", "high-contrast"];
 
@@ -75,4 +76,61 @@ export function readReadingPosition(slug: string): number | null {
 export function writeReadingPosition(slug: string, page: number): void {
   if (!isBrowser()) return;
   window.localStorage.setItem(POSITION_KEY_PREFIX + slug, String(page));
+}
+
+/** One spacer Reader.tsx's enforceChapterPageStarts() inserted before a chapter heading. */
+export interface PaginationSpacerPlanEntry {
+  headingId: string;
+  heightPx: number;
+}
+
+/**
+ * Cached result of Reader.tsx's enforceChapterPageStarts() -- the
+ * round-based DOM measurement that pushes chapters onto fresh pages,
+ * documented there as costing several seconds on a full-length book at
+ * desktop width. That cost only actually depends on (slug, viewport
+ * width, column height, content), all of which are normally unchanged
+ * between visits on the same device, so the *result* is safe to reuse --
+ * Reader.tsx still runs one cheap verification pass over the cached plan
+ * before trusting it, and silently recomputes from scratch if anything
+ * doesn't check out.
+ */
+export interface PaginationCacheEntry {
+  width: number;
+  columnHeight: number;
+  contentHash: string;
+  spacers: PaginationSpacerPlanEntry[];
+}
+
+export function readPaginationCache(slug: string): PaginationCacheEntry | null {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(PAGINATION_KEY_PREFIX + slug);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PaginationCacheEntry>;
+    if (
+      typeof parsed.width !== "number" ||
+      typeof parsed.columnHeight !== "number" ||
+      typeof parsed.contentHash !== "string" ||
+      !Array.isArray(parsed.spacers)
+    ) {
+      return null;
+    }
+    return parsed as PaginationCacheEntry;
+  } catch {
+    // Corrupted JSON, disabled storage, etc. -- treat exactly like a miss.
+    return null;
+  }
+}
+
+export function writePaginationCache(slug: string, entry: PaginationCacheEntry): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(PAGINATION_KEY_PREFIX + slug, JSON.stringify(entry));
+  } catch {
+    // Quota exceeded, private-browsing storage limits, etc. -- this cache
+    // is a pure speed optimization on top of the always-correct
+    // round-based algorithm, never required for correctness, so a failed
+    // write just means the next visit recomputes instead of reusing.
+  }
 }

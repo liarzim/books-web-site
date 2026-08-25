@@ -10,7 +10,13 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import styles from "./Reader.module.css";
-import { readReadingPosition, writeReadingPosition } from "@/lib/preferences";
+import {
+  readPaginationCache,
+  readReadingPosition,
+  writePaginationCache,
+  writeReadingPosition,
+  type PaginationSpacerPlanEntry,
+} from "@/lib/preferences";
 import type { TocEntry } from "@/lib/books";
 
 interface ReaderProps {
@@ -55,6 +61,20 @@ const CHAPTER_SPACER_ATTR = "data-chapter-spacer";
 // headroom for a somewhat longer book without the cap silently starting
 // to matter.
 const MAX_CHAPTER_SPACER_ROUNDS = 100;
+
+// Cheap (non-cryptographic) string hash, used only to notice when a
+// book's rendered content has changed since the last time this browser
+// computed its pagination -- see the cache in enforceChapterPageStarts.
+// Iterating the full content string (hundreds of KB for a long book)
+// still costs well under a millisecond this way, negligible next to the
+// multi-second cost it lets that function skip on a cache hit.
+function cheapHash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 33 + value.charCodeAt(i)) | 0;
+  }
+  return `${hash.toString(36)}:${value.length}`;
+}
 
 /**
  * Makes every chapter start at the top of a fresh virtual PAGE (not just a
@@ -110,8 +130,22 @@ const MAX_CHAPTER_SPACER_ROUNDS = 100;
  * at ~3.5 seconds on the real book at desktop width -- still far better
  * than the 11-second naive version, but a real, user-visible cost worth
  * knowing about if pagination setup ever needs to feel instant.
+ *
+ * That ~3.5s is the cost of *deriving* the spacer plan, not of the plan
+ * itself -- and the plan only depends on (slug, viewport width, column
+ * height, content), all of which are normally identical the next time
+ * the same book opens on the same device. So the result is cached (see
+ * lib/preferences.ts's read/writePaginationCache) and reused on a match,
+ * skipping the round loop entirely in favor of one batched write plus
+ * one verification read -- effectively two reflows instead of ~56.
+ * Anything that could make a cached plan wrong (a font finishing loading
+ * differently, a genuine content edit the hash didn't happen to catch,
+ * etc.) is caught by that verification pass, which falls through to the
+ * full round loop below exactly as if there had been no cache at all --
+ * this is a pure speed path layered on top of the always-correct
+ * algorithm, never a substitute for it.
  */
-function enforceChapterPageStarts(pages: HTMLElement) {
+function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHtml: string) {
   const columnHeight = pages.clientHeight;
   if (!columnHeight) return;
 
@@ -135,6 +169,52 @@ function enforceChapterPageStarts(pages: HTMLElement) {
     : 0;
 
   pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
+
+  // A heading is still wrong (mid-column, or -- at desktop width -- at
+  // the top of a column that isn't the first of its spread) under
+  // whatever spacers currently exist in the DOM. Shared by the cache
+  // verification pass below, so both agree on exactly what "correct"
+  // means.
+  const findBadHeadings = () =>
+    Array.from(pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]')).filter((heading) => {
+      const offsetTop = heading.offsetTop;
+      const offsetLeft = heading.offsetLeft;
+      const midColumn = offsetTop > 1 && offsetTop < columnHeight;
+      const columnIndex = Math.round(
+        Math.abs(offsetLeft - firstColumnOffsetLeft) / columnStride,
+      );
+      const startsMidSpread =
+        columnsPerSpread > 1 && offsetTop <= 1 && columnIndex % columnsPerSpread !== 0;
+      return midColumn || startsMidSpread;
+    });
+
+  const contentHash = cheapHash(contentHtml);
+  const cached = readPaginationCache(slug);
+  if (
+    cached &&
+    cached.width === spreadWidth &&
+    cached.columnHeight === columnHeight &&
+    cached.contentHash === contentHash
+  ) {
+    cached.spacers.forEach(({ headingId, heightPx }) => {
+      const heading = document.getElementById(headingId);
+      if (!heading) return;
+      const spacer = document.createElement("div");
+      spacer.setAttribute(CHAPTER_SPACER_ATTR, "true");
+      spacer.setAttribute("aria-hidden", "true");
+      spacer.style.height = `${heightPx}px`;
+      heading.parentNode?.insertBefore(spacer, heading);
+    });
+
+    // One verification reflow. If the cached plan still lands every
+    // heading correctly, we're done -- no round loop needed at all.
+    if (findBadHeadings().length === 0) return;
+
+    // Stale despite a matching key (e.g. fonts settled differently this
+    // load) -- discard it and fall through to a full, from-scratch
+    // recompute exactly as if this had been a cache miss.
+    pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
+  }
 
   for (let round = 0; round < MAX_CHAPTER_SPACER_ROUNDS; round += 1) {
     const headings = Array.from(
@@ -170,6 +250,41 @@ function enforceChapterPageStarts(pages: HTMLElement) {
 
     if (!insertedAny) break;
   }
+
+  // A heading whose correction spanned multiple rounds can end up with
+  // several spacers stacked immediately before it -- each round's
+  // insertBefore lands right before the heading, ahead of any earlier
+  // round's spacer for that same heading, so they accumulate rather than
+  // replace each other. Consolidate each run into one spacer before
+  // reading the plan below: otherwise walking spacer.nextElementSibling
+  // would only capture the last (smallest, insufficient on its own)
+  // spacer per heading, silently truncating the cached plan.
+  pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]').forEach((heading) => {
+    let total = 0;
+    let node = heading.previousElementSibling as HTMLElement | null;
+    const run: HTMLElement[] = [];
+    while (node && node.hasAttribute(CHAPTER_SPACER_ATTR)) {
+      total += parseFloat(node.style.height) || 0;
+      run.push(node);
+      node = node.previousElementSibling as HTMLElement | null;
+    }
+    if (run.length > 1) {
+      run.slice(1).forEach((el) => el.remove());
+      run[0].style.height = `${total}px`;
+    }
+  });
+
+  // Save the plan just derived so the next load of this book, at this
+  // same width/column-height/content, can skip straight to the fast path
+  // above instead of paying for another full round loop.
+  const spacers: PaginationSpacerPlanEntry[] = [];
+  pages.querySelectorAll<HTMLElement>(`[${CHAPTER_SPACER_ATTR}]`).forEach((spacer) => {
+    const heading = spacer.nextElementSibling as HTMLElement | null;
+    if (heading?.id) {
+      spacers.push({ headingId: heading.id, heightPx: parseFloat(spacer.style.height) || 0 });
+    }
+  });
+  writePaginationCache(slug, { width: spreadWidth, columnHeight, contentHash, spacers });
 }
 
 // How long the transient page-turn "flip flair" animation runs. Kept in
@@ -236,7 +351,7 @@ export default function Reader({
     // count, chapter positions -- needs to reflect the corrected layout,
     // not the pre-correction one. See enforceChapterPageStarts for why
     // this can't just be a CSS rule.
-    enforceChapterPageStarts(pages);
+    enforceChapterPageStarts(pages, slug, contentHtml);
 
     setPageWidth(width);
 
@@ -287,7 +402,11 @@ export default function Reader({
     } else {
       setCurrentPage((prev) => Math.min(prev, pageCount - 1));
     }
-  }, [slug]);
+    // contentHtml is a dependency (not just read via closure) because
+    // enforceChapterPageStarts hashes it for the pagination cache key --
+    // this callback has to be recreated whenever it changes so that hash
+    // never reflects a stale render's content.
+  }, [slug, contentHtml]);
 
   useIsomorphicLayoutEffect(() => {
     if (previousSlugRef.current !== slug) {

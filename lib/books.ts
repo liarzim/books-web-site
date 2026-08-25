@@ -22,6 +22,15 @@ export interface BookFrontmatter {
   language?: string;
   toc?: TocEntry[];
   /**
+   * Optional short author's-note/foreword paragraph, rendered as a boxed
+   * callout on the cover page itself (below title/author), not as a
+   * separate page. Plain text -- HTML-escaped by buildCoverPageHtml, with
+   * `\n` (blank lines in the frontmatter) turned into paragraph breaks. Most
+   * books won't set this; buildCoverPageHtml simply omits the box when it's
+   * absent.
+   */
+  introduction?: string;
+  /**
    * A CMS-authored slug, used by the admin editor only to name the file
    * when a book is first created (content/books/<slug>.md). It is NOT the
    * routing source of truth after that -- the filename is. See
@@ -109,10 +118,21 @@ function buildCoverPageHtml(meta: BookFrontmatter): string {
     : "";
   const yearText = meta.publishedYear ? ` · ${meta.publishedYear}` : "";
 
+  const introductionHtml = meta.introduction
+    ? `<h2 style="margin:1.5rem 0 0.5rem;font-size:1.1rem;">${escapeHtml("הקדמה")}</h2>
+<div style="border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;max-width:32rem;text-align:center;">
+${meta.introduction
+  .split(/\n\s*\n/)
+  .map((paragraph) => `<p style="margin:0 0 0.75rem;">${escapeHtml(paragraph.trim())}</p>`)
+  .join("\n")}
+</div>`
+    : "";
+
   return `<div style="min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:1rem 0;">
 ${coverImageHtml}
 <h1 style="margin:0 0 0.5rem;">${escapeHtml(meta.title)}</h1>
 <p style="color:var(--muted);margin:0;">${escapeHtml(meta.author)}${escapeHtml(yearText)}</p>
+${introductionHtml}
 </div>`;
 }
 
