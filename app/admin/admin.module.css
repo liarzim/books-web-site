@@ -72,3 +72,33 @@
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.bookRowActions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.deleteLink {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.deleteLink:hover {
+  color: var(--fg);
+}
+
+.deleteLink:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.bookRowError {
+  color: var(--muted);
+  font-size: 0.8rem;
+}

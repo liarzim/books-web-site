@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getAdminSession } from "@/lib/adminAuth";
 import { getAllBooksMeta } from "@/lib/books";
+import DeleteBookButton from "./DeleteBookButton";
 import styles from "./admin.module.css";
 
 export default async function AdminPage() {
@@ -59,7 +60,10 @@ export default async function AdminPage() {
                 {book.title}{" "}
                 <span className={styles.bookMeta}>({book.slug})</span>
               </span>
-              <Link href={`/admin/books/${book.slug}`}>Edit</Link>
+              <span className={styles.bookRowActions}>
+                <Link href={`/admin/books/${book.slug}`}>Edit</Link>
+                <DeleteBookButton slug={book.slug} title={book.title} />
+              </span>
             </li>
           ))}
         </ul>
