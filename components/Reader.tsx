@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import styles from "./Reader.module.css";
@@ -20,8 +21,29 @@ import {
 import type { TocEntry } from "@/lib/books";
 
 interface ReaderProps {
-  /** Pre-rendered HTML body of the book (from lib/books.ts). */
-  contentHtml: string;
+  /**
+   * Pre-rendered book content, as a Server Component subtree (see
+   * app/books/[slug]/page.tsx) rather than an HTML string prop. Passing it
+   * as `children` instead of e.g. `contentHtml: string` means Next.js
+   * treats it as an opaque, already-rendered reference: a large book's
+   * markup is emitted once in the page's HTML, not a second time in the
+   * RSC/Flight hydration payload the way a big string prop on a "use
+   * client" component would be. The one structural cost is that whatever
+   * page.tsx passes in must carry a `data-book-content` marker on its
+   * outermost element -- see getBookContentRoot below -- since
+   * dangerouslySetInnerHTML can't be set directly on a Fragment, so
+   * there's necessarily one wrapper div between `.pages` and the book's
+   * actual first element (the cover).
+   */
+  children: ReactNode;
+  /**
+   * Fingerprint of the rendered content, computed once server-side in
+   * lib/books.ts (Book.contentHash). Used only as the pagination cache key
+   * in enforceChapterPageStarts -- see the comment there for why this is a
+   * separate small prop instead of re-hashing `children` on the client
+   * (which isn't a string here, and shouldn't need to be read as one).
+   */
+  contentHash: string;
   /** Book slug, used as the localStorage key for the saved read position. */
   slug: string;
   /**
@@ -62,18 +84,18 @@ const CHAPTER_SPACER_ATTR = "data-chapter-spacer";
 // to matter.
 const MAX_CHAPTER_SPACER_ROUNDS = 100;
 
-// Cheap (non-cryptographic) string hash, used only to notice when a
-// book's rendered content has changed since the last time this browser
-// computed its pagination -- see the cache in enforceChapterPageStarts.
-// Iterating the full content string (hundreds of KB for a long book)
-// still costs well under a millisecond this way, negligible next to the
-// multi-second cost it lets that function skip on a cache hit.
-function cheapHash(value: string): string {
-  let hash = 5381;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 33 + value.charCodeAt(i)) | 0;
-  }
-  return `${hash.toString(36)}:${value.length}`;
+// `pages` (the column-count element) now wraps the book's actual content
+// in one extra `data-book-content` div (see the ReaderProps.children
+// comment) instead of the cover being pages.firstElementChild directly.
+// This is the shared lookup for "the real first content element", used
+// everywhere that used to assume pages.firstElementChild was the cover --
+// falls back to pages.firstElementChild so a caller never sees null just
+// because the marker is missing for some reason.
+function getBookContentRoot(pages: HTMLElement): HTMLElement | null {
+  return (
+    pages.querySelector<HTMLElement>("[data-book-content]") ??
+    (pages.firstElementChild as HTMLElement | null)
+  );
 }
 
 /**
@@ -145,7 +167,7 @@ function cheapHash(value: string): string {
  * this is a pure speed path layered on top of the always-correct
  * algorithm, never a substitute for it.
  */
-function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHtml: string) {
+function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHash: string) {
   const columnHeight = pages.clientHeight;
   if (!columnHeight) return;
 
@@ -164,9 +186,11 @@ function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHtml:
   // is unconditionally prepended), so its offsetLeft is column index 0.
   // See the comment on recalculate()'s positions calculation for why this
   // reference point -- not zero -- has to be subtracted before dividing.
-  const firstColumnOffsetLeft = pages.firstElementChild
-    ? (pages.firstElementChild as HTMLElement).offsetLeft
-    : 0;
+  // Reached via getBookContentRoot rather than pages.firstElementChild
+  // directly, since that's now the data-book-content wrapper, not the
+  // cover itself -- see the ReaderProps.children comment.
+  const contentRoot = getBookContentRoot(pages);
+  const firstColumnOffsetLeft = contentRoot ? contentRoot.offsetLeft : 0;
 
   pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
 
@@ -188,7 +212,6 @@ function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHtml:
       return midColumn || startsMidSpread;
     });
 
-  const contentHash = cheapHash(contentHtml);
   const cached = readPaginationCache(slug);
   if (
     cached &&
@@ -299,7 +322,8 @@ const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export default function Reader({
-  contentHtml,
+  children,
+  contentHash,
   slug,
   dir = "ltr",
   toc,
@@ -351,7 +375,7 @@ export default function Reader({
     // count, chapter positions -- needs to reflect the corrected layout,
     // not the pre-correction one. See enforceChapterPageStarts for why
     // this can't just be a CSS rule.
-    enforceChapterPageStarts(pages, slug, contentHtml);
+    enforceChapterPageStarts(pages, slug, contentHash);
 
     setPageWidth(width);
 
@@ -381,9 +405,8 @@ export default function Reader({
     // reference element (the cover) enforceChapterPageStarts uses for its
     // own column-index math above.
     const headings = pages.querySelectorAll<HTMLElement>('[id^="chapter-"]');
-    const firstColumnOffsetLeft = pages.firstElementChild
-      ? (pages.firstElementChild as HTMLElement).offsetLeft
-      : 0;
+    const contentRoot = getBookContentRoot(pages);
+    const firstColumnOffsetLeft = contentRoot ? contentRoot.offsetLeft : 0;
     const positions: Record<string, number> = {};
     headings.forEach((heading) => {
       const pageIndex = Math.round(
@@ -402,11 +425,11 @@ export default function Reader({
     } else {
       setCurrentPage((prev) => Math.min(prev, pageCount - 1));
     }
-    // contentHtml is a dependency (not just read via closure) because
-    // enforceChapterPageStarts hashes it for the pagination cache key --
-    // this callback has to be recreated whenever it changes so that hash
-    // never reflects a stale render's content.
-  }, [slug, contentHtml]);
+    // contentHash is a dependency (not just read via closure) because
+    // enforceChapterPageStarts uses it as the pagination cache key -- this
+    // callback has to be recreated whenever it changes so a stale render's
+    // hash is never used to key a fresh render's content.
+  }, [slug, contentHash]);
 
   useIsomorphicLayoutEffect(() => {
     if (previousSlugRef.current !== slug) {
@@ -414,7 +437,7 @@ export default function Reader({
       hasRestoredPositionRef.current = false;
     }
     recalculate();
-  }, [recalculate, contentHtml, slug]);
+  }, [recalculate, contentHash, slug]);
 
   // Persist the reading position once it's been restored (so this never
   // overwrites the saved page with 0 before the restore above runs).
@@ -483,7 +506,7 @@ export default function Reader({
       if (timer) clearTimeout(timer);
       pending.forEach((img) => img.removeEventListener("load", scheduleRecalculate));
     };
-  }, [recalculate, contentHtml]);
+  }, [recalculate, contentHash]);
 
   // Brief "flip flair" on every page turn: a transient class (see
   // Reader.module.css's .turning / @keyframes pageFlipFlair) applies a
@@ -631,9 +654,9 @@ export default function Reader({
             ref={pagesRef}
             className={styles.pages}
             style={{ transform: `translateX(${pageAxisSign * currentPage * pageWidth}px)` }}
-            // Content comes from Markdown rendered server-side in lib/books.ts.
-            dangerouslySetInnerHTML={{ __html: contentHtml }}
-          />
+          >
+            {children}
+          </div>
         </div>
 
         {hasToc && (

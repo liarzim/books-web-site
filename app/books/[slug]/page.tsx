@@ -64,13 +64,18 @@ export default async function BookPage({ params }: PageProps) {
       </p>
 
       {/* Markdown body, parsed with gray-matter + rendered to HTML with
-          remark in lib/books.ts, then paginated into virtual pages here. */}
-      <Reader
-        contentHtml={book.contentHtml}
-        slug={slug}
-        dir={dir}
-        toc={book.toc}
-      />
+          remark in lib/books.ts, then paginated into virtual pages here.
+          Passed as `children` (a Server Component subtree), not a string
+          prop -- see the ReaderProps.children comment in Reader.tsx for
+          why: a large book's HTML otherwise gets embedded twice in the
+          page payload (once in the SSR'd HTML, once again in the
+          RSC/Flight hydration data a "use client" component's string
+          props are serialized into). The data-book-content marker is how
+          Reader.tsx finds this div again from inside `.pages` once it's
+          rendered as an opaque child instead of a prop it can inspect. */}
+      <Reader slug={slug} dir={dir} toc={book.toc} contentHash={book.contentHash}>
+        <div data-book-content dangerouslySetInnerHTML={{ __html: book.contentHtml }} />
+      </Reader>
     </article>
   );
 }

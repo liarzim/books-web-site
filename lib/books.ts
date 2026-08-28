@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import matter from "gray-matter";
 import { remark } from "remark";
 import html from "remark-html";
@@ -46,6 +47,16 @@ export interface BookMeta extends BookFrontmatter {
 
 export interface Book extends BookMeta {
   contentHtml: string;
+  /**
+   * Short fingerprint of contentHtml, computed here (server-side) instead
+   * of by the Reader client component. This is what lets Reader.tsx accept
+   * pre-rendered content as `children` -- an opaque, already-rendered
+   * subtree it never needs to read as a string -- while still having a
+   * cheap, stable cache key for lib/preferences.ts's pagination cache
+   * (which used to hash contentHtml itself on every load, requiring the
+   * full string to be present on the client for that purpose alone).
+   */
+  contentHash: string;
 }
 
 /**
@@ -176,10 +187,17 @@ export async function getBookBySlug(slug: string): Promise<Book | null> {
   const bodyHtml = injectHeadingIds(processedContent.toString(), frontmatter.toc);
   const contentHtml = buildCoverPageHtml(frontmatter) + bodyHtml;
 
+  // Cheap, stable fingerprint of the rendered content -- not a security
+  // hash, just a short string that changes whenever contentHtml does, so
+  // the client-side pagination cache (lib/preferences.ts) can key off it
+  // without ever needing contentHtml itself as a client prop.
+  const contentHash = createHash("sha1").update(contentHtml).digest("hex").slice(0, 16);
+
   return {
     ...frontmatter,
     slug,
     contentHtml,
+    contentHash,
   };
 }
 
