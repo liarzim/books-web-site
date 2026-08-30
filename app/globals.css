@@ -11,6 +11,23 @@
   --accent: #2554c7;
   --accent-contrast: #ffffff;
   --focus-ring: #2554c7;
+
+  /* "Issue" editorial palette (Phase 2) -- used only by the homepage, the
+     catalog grid, and the book issue page header. Deliberately a separate
+     token set from --bg/--fg/--muted/--border/--accent above: those stay
+     exactly as they were for the admin panel, the Reader's own chrome, and
+     anything else not part of this redesign. See the dark/high-contrast
+     blocks below for why this palette itself doesn't get a bespoke dark
+     variant. */
+  --paper: #f1ece1;
+  --paper-2: #f8f4ea;
+  --ink: #211d16;
+  --ink-muted: #726a5b;
+  --hairline: #d9cfbb;
+  --hairline-strong: #c7bba0;
+  --oxblood: #8c3327;
+  --oxblood-ink: #f5ece6;
+  --brass: #8a6a2e;
 }
 
 :root[data-theme="dark"] {
@@ -23,6 +40,21 @@
   --accent: #8ab4ff;
   --accent-contrast: #0b1a33;
   --focus-ring: #8ab4ff;
+
+  /* The warm-paper editorial look is a light-theme-only aesthetic choice,
+     not something with an independently designed/tested dark equivalent
+     yet -- rather than invent one, the Phase 2 pages fall back to this
+     site's existing (already accessible) dark palette by aliasing straight
+     to the tokens above. Same reasoning for high-contrast below. */
+  --paper: var(--bg);
+  --paper-2: var(--bg);
+  --ink: var(--fg);
+  --ink-muted: var(--muted);
+  --hairline: var(--border);
+  --hairline-strong: var(--border);
+  --oxblood: var(--accent);
+  --oxblood-ink: var(--accent-contrast);
+  --brass: var(--accent);
 }
 
 :root[data-theme="high-contrast"] {
@@ -35,6 +67,19 @@
   --accent: #ffff00;
   --accent-contrast: #000000;
   --focus-ring: #ffff00;
+
+  /* See the dark-theme comment above -- same reasoning applies here, and
+     matters more: high-contrast mode exists specifically for readers who
+     need it, so it must never be softened by the editorial palette. */
+  --paper: var(--bg);
+  --paper-2: var(--bg);
+  --ink: var(--fg);
+  --ink-muted: var(--muted);
+  --hairline: var(--border);
+  --hairline-strong: var(--border);
+  --oxblood: var(--accent);
+  --oxblood-ink: var(--accent-contrast);
+  --brass: var(--accent);
 }
 
 * {

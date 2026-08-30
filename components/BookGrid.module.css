@@ -1,0 +1,106 @@
+.empty {
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1.5rem 1.75rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-2);
+  border: 1px solid var(--hairline);
+  border-inline-start: 4px solid var(--oxblood);
+  text-decoration: none;
+  color: var(--ink);
+  transition:
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+.card:hover {
+  border-color: var(--brass);
+  border-inline-start-color: var(--oxblood);
+  transform: translateY(-2px);
+}
+
+.cover {
+  aspect-ratio: 5 / 7;
+  display: block;
+  overflow: hidden;
+}
+
+.coverImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.coverPlate {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+
+.coverTitle {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 1.3rem;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--ink);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 1.1rem 1.15rem 1.3rem;
+  flex: 1;
+}
+
+.title {
+  font-family: var(--font-serif), Georgia, serif;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.author {
+  font-family: var(--font-sans-editorial), sans-serif;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.excerpt {
+  font-family: var(--font-sans-editorial), sans-serif;
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.langs {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: auto;
+  padding-top: 0.6rem;
+}
+
+.langChip {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink-muted);
+}
+
+.langChipCurrent {
+  border-color: var(--oxblood);
+  color: var(--oxblood);
+}

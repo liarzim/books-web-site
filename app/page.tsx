@@ -1,27 +1,36 @@
 import Link from "next/link";
+import BookGrid from "@/components/BookGrid";
+import { getAllBooksMeta } from "@/lib/books";
 import styles from "./page.module.css";
 
 export default function Home() {
+  const books = getAllBooksMeta();
+
   return (
-    <main className={styles.main}>
-      <h1>Books Web Site</h1>
-      <p className={styles.subtitle}>Choose how you&apos;d like to continue.</p>
+    <main>
+      <header className={styles.masthead}>
+        <div className={styles.mastheadInner}>
+          <div className={styles.wordmarkRow}>
+            <span className={styles.kicker}>Books Web Site</span>
+            <h1 className={styles.wordmark}>Catalog</h1>
+            <p className={styles.subtitle}>Browse the catalog and start reading.</p>
+          </div>
+          <Link href="/admin" className={styles.adminLink}>
+            Admin
+          </Link>
+        </div>
+      </header>
 
-      <nav className={styles.choices} aria-label="Entry points">
-        <Link href="/books" className={styles.card}>
-          <span className={styles.cardTitle}>Read a book</span>
-          <span className={styles.cardDescription}>
-            Browse the catalog and start reading
+      <div className={styles.catalog}>
+        <div className={styles.catalogHead}>
+          <h2>Titles</h2>
+          <span className={styles.catalogCount}>
+            {books.length} {books.length === 1 ? "title" : "titles"}
           </span>
-        </Link>
+        </div>
 
-        <Link href="/admin" className={styles.card}>
-          <span className={styles.cardTitle}>Admin</span>
-          <span className={styles.cardDescription}>
-            Sign in with Google to edit books
-          </span>
-        </Link>
-      </nav>
+        <BookGrid books={books} />
+      </div>
     </main>
   );
 }

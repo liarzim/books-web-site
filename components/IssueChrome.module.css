@@ -1,0 +1,158 @@
+.issueHero {
+  background: var(--paper);
+  padding: 2.75rem 1.5rem 2.25rem;
+  border-bottom: 3px solid var(--oxblood);
+}
+
+.issueHeroInner {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.breadcrumb {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+  margin-bottom: 1.6rem;
+  display: block;
+  text-decoration: none;
+}
+
+.breadcrumb:hover {
+  color: var(--oxblood);
+}
+
+.issueMetaRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.issueKicker {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin-bottom: 0.7rem;
+  display: block;
+}
+
+.issueTitle {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(2rem, 5vw, 2.9rem);
+  line-height: 1.15;
+  color: var(--ink);
+  margin: 0;
+}
+
+.issueAuthor {
+  margin-top: 0.9rem;
+  font-family: var(--font-sans-editorial), sans-serif;
+  font-weight: 300;
+  font-size: 1.02rem;
+  color: var(--ink-muted);
+}
+
+.langSwitcher {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.langPill {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink-muted);
+  background: var(--paper-2);
+  text-decoration: none;
+}
+
+.langPill:hover {
+  border-color: var(--oxblood);
+  color: var(--oxblood);
+}
+
+.langPill[aria-current="page"] {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: var(--oxblood-ink);
+}
+
+.issueBody {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 2rem;
+}
+
+.indexBox {
+  border: 1px solid var(--hairline);
+  background: var(--paper-2);
+  padding: 1.5rem 1.6rem;
+  margin-bottom: 2.5rem;
+}
+
+.indexBoxHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 0.7rem;
+  margin-bottom: 0.9rem;
+  gap: 1rem;
+}
+
+.indexBoxHead h2 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 1rem;
+  color: var(--ink);
+  margin: 0;
+}
+
+.indexBoxMeta {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.indexList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.indexList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px dotted var(--hairline);
+  font-family: var(--font-sans-editorial), sans-serif;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.indexList li:last-child {
+  border-bottom: none;
+}
+
+.indexNum {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.indexMore {
+  color: var(--ink-muted);
+  font-size: 0.85rem !important;
+}
