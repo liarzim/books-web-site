@@ -310,10 +310,21 @@ function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHash:
   writePaginationCache(slug, { width: spreadWidth, columnHeight, contentHash, spacers });
 }
 
-// How long the transient page-turn "flip flair" animation runs. Kept in
-// one place since both the CSS keyframes (Reader.module.css) and the JS
-// class-removal timer below need to agree on it.
-const FLIP_ANIMATION_MS = 320;
+// Duration of EACH phase (out, then in) of the rigid page-turn flip -- see
+// turnPage() below and the .flippingOutNext/.flippingInNext/etc. keyframes
+// in Reader.module.css, which this must stay in sync with (their
+// animation-duration is this same number, hardcoded there for the same
+// reason FLIP_ANIMATION_MS used to be: a CSS file can't read a JS
+// constant). The content swap (goToPage) happens at the boundary between
+// the two phases, i.e. FLIP_PHASE_MS after a turn starts and again
+// FLIP_PHASE_MS after that.
+const FLIP_PHASE_MS = 260;
+
+// Turning a page is a single physical gesture from the user's point of
+// view -- checked in turnPage() below so a second ArrowRight/click/swipe
+// that arrives mid-flip is simply ignored (not queued, not restarted)
+// rather than fighting the in-flight animation's own timers.
+type FlipPhase = "out" | "in" | null;
 
 // useLayoutEffect warns on the server; this swaps to a no-op-safe
 // useEffect there and only runs synchronously in the browser, where the
@@ -344,6 +355,15 @@ export default function Reader({
   // pagination in recalculate().
   const [chapterPages, setChapterPages] = useState<Record<string, number>>({});
   const [isTocOpen, setIsTocOpen] = useState(false);
+
+  // Rigid page-turn flip state -- see turnPage() below and the
+  // .flippingOutNext/.flippingInNext/etc. classes in Reader.module.css.
+  // null means no flip is in flight (the normal, resting state, including
+  // for every jumpToChapter TOC jump, which never touches this).
+  const [flipPhase, setFlipPhase] = useState<FlipPhase>(null);
+  const [flipDirection, setFlipDirection] = useState<"next" | "prev">("next");
+  const flipOutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flipInTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const touchStartX = useRef<number | null>(null);
   const touchDeltaX = useRef(0);
@@ -435,9 +455,27 @@ export default function Reader({
     if (previousSlugRef.current !== slug) {
       previousSlugRef.current = slug;
       hasRestoredPositionRef.current = false;
+
+      // A flip in flight belongs to the PREVIOUS book -- Next.js reusing
+      // this component instance across a same-route navigation (see the
+      // previousSlugRef comment above) shouldn't let that old animation's
+      // timers fire against the new book's pages.
+      if (flipOutTimeoutRef.current) clearTimeout(flipOutTimeoutRef.current);
+      if (flipInTimeoutRef.current) clearTimeout(flipInTimeoutRef.current);
+      setFlipPhase(null);
     }
     recalculate();
   }, [recalculate, contentHash, slug]);
+
+  // Belt-and-suspenders cleanup for the flip timers on unmount (the
+  // slug-change branch above only fires on a same-route reuse, not a real
+  // unmount).
+  useEffect(() => {
+    return () => {
+      if (flipOutTimeoutRef.current) clearTimeout(flipOutTimeoutRef.current);
+      if (flipInTimeoutRef.current) clearTimeout(flipInTimeoutRef.current);
+    };
+  }, []);
 
   // Persist the reading position once it's been restored (so this never
   // overwrites the saved page with 0 before the restore above runs).
@@ -508,42 +546,6 @@ export default function Reader({
     };
   }, [recalculate, contentHash]);
 
-  // Brief "flip flair" on every page turn: a transient class (see
-  // Reader.module.css's .turning / @keyframes pageFlipFlair) applies a
-  // quick rotateY tilt + scale + brightness dip to the viewport, layered
-  // on top of (not replacing) the existing translateX slide on .pages.
-  // Keeping it on a separate element/property than the positioning
-  // transform means it can never fight with or delay the actual page
-  // positioning -- it's purely decorative and self-cleans on a timer.
-  const flipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isFirstPageRenderRef = useRef(true);
-  useEffect(() => {
-    if (isFirstPageRenderRef.current) {
-      // Don't play the flip animation on initial mount / restored position.
-      isFirstPageRenderRef.current = false;
-      return;
-    }
-
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-
-    if (flipTimeoutRef.current) clearTimeout(flipTimeoutRef.current);
-
-    viewport.classList.remove(styles.turning);
-    // Force a reflow so re-adding the class restarts the animation even
-    // if the previous turn's animation is still finishing.
-    void viewport.offsetWidth;
-    viewport.classList.add(styles.turning);
-
-    flipTimeoutRef.current = setTimeout(() => {
-      viewport.classList.remove(styles.turning);
-    }, FLIP_ANIMATION_MS);
-
-    return () => {
-      if (flipTimeoutRef.current) clearTimeout(flipTimeoutRef.current);
-    };
-  }, [currentPage]);
-
   const goToPage = useCallback(
     (index: number) => {
       setCurrentPage(Math.min(Math.max(index, 0), totalPages - 1));
@@ -551,14 +553,57 @@ export default function Reader({
     [totalPages],
   );
 
-  const goNext = useCallback(
-    () => goToPage(currentPage + 1),
-    [currentPage, goToPage],
+  // Drives the rigid page-turn flip (see the FLIP_PHASE_MS / FlipPhase
+  // comment above and the .flippingOutNext/etc. classes in
+  // Reader.module.css). delta is +1 for next, -1 for prev; goNext/goPrev
+  // below are the only callers, so this is what every input method
+  // (buttons, arrow keys, click zones, swipe) actually goes through.
+  //
+  // Deliberately does NOT touch currentPage itself until the out phase has
+  // finished -- goToPage is called from inside the setTimeout below, at
+  // the out/in boundary, so the actual page content only ever changes
+  // while .viewport is edge-on (~90deg) and therefore invisible. This is
+  // also why jumpToChapter (TOC jumps) calls goToPage directly instead of
+  // turnPage: a jump can land many pages away from a chapter start, which
+  // would make "turning" a physically strange animation to sit through,
+  // and it was excluded from the flip requirement (this only covers
+  // sequential next/prev turns).
+  const turnPage = useCallback(
+    (delta: 1 | -1) => {
+      const target = Math.min(Math.max(currentPage + delta, 0), totalPages - 1);
+      if (target === currentPage) return; // already at an edge -- nothing to turn to
+
+      // A flip is a single physical gesture -- ignore a new request that
+      // arrives mid-flight rather than queueing or restarting it, so a
+      // fast double-tap on the next button can't desync the out/in timers
+      // from which page is actually showing.
+      if (flipPhase !== null) return;
+
+      if (
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      ) {
+        goToPage(target);
+        return;
+      }
+
+      setFlipDirection(delta === 1 ? "next" : "prev");
+      setFlipPhase("out");
+
+      flipOutTimeoutRef.current = setTimeout(() => {
+        goToPage(target);
+        setFlipPhase("in");
+
+        flipInTimeoutRef.current = setTimeout(() => {
+          setFlipPhase(null);
+        }, FLIP_PHASE_MS);
+      }, FLIP_PHASE_MS);
+    },
+    [currentPage, totalPages, flipPhase, goToPage],
   );
-  const goPrev = useCallback(
-    () => goToPage(currentPage - 1),
-    [currentPage, goToPage],
-  );
+
+  const goNext = useCallback(() => turnPage(1), [turnPage]);
+  const goPrev = useCallback(() => turnPage(-1), [turnPage]);
 
   const jumpToChapter = useCallback(
     (anchor: string) => {
@@ -625,6 +670,21 @@ export default function Reader({
 
   const hasToc = Boolean(toc && toc.length > 0);
 
+  // See the .flippingOutNext/.flippingInNext/.flippingOutPrev/.flippingInPrev
+  // comment in Reader.module.css: which class applies depends on both the
+  // phase (out vs in) and the direction (next vs prev) of the in-flight
+  // flip, and is empty once flipPhase is back to null (the resting state).
+  const flipClassName =
+    flipPhase === "out"
+      ? flipDirection === "next"
+        ? styles.flippingOutNext
+        : styles.flippingOutPrev
+      : flipPhase === "in"
+        ? flipDirection === "next"
+          ? styles.flippingInNext
+          : styles.flippingInPrev
+        : "";
+
   return (
     <div className={styles.wrapper}>
       {hasToc && (
@@ -644,7 +704,7 @@ export default function Reader({
       <div className={styles.readerRow}>
         <div
           ref={viewportRef}
-          className={styles.viewport}
+          className={`${styles.viewport} ${flipClassName}`.trim()}
           onClick={handleClick}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
@@ -652,7 +712,7 @@ export default function Reader({
         >
           <div
             ref={pagesRef}
-            className={styles.pages}
+            className={`${styles.pages} ${flipPhase !== null ? styles.pagesNoTransition : ""}`.trim()}
             style={{ transform: `translateX(${pageAxisSign * currentPage * pageWidth}px)` }}
           >
             {children}

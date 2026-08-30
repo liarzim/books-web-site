@@ -15,6 +15,15 @@ interface BookGridProps {
  * Each card links straight to the book's default-language issue page
  * (/books/<slug>/<lang>) rather than the bare /books/<slug> redirect, so a
  * click from the grid never pays for an extra hop.
+ *
+ * Opens in a new tab (target="_blank"): clicking a book from the catalog
+ * is meant to feel like opening a separate issue/publication, not
+ * navigating away from the catalog itself -- so the catalog tab stays put
+ * behind it. rel="noopener noreferrer" is the standard companion to any
+ * target="_blank": without it the opened page gets a live `window.opener`
+ * handle back to this tab, which is both a minor security exposure and
+ * (on some browsers) a performance cost since the two tabs can no longer
+ * run on separate processes.
  */
 export default function BookGrid({ books }: BookGridProps) {
   if (books.length === 0) {
@@ -38,6 +47,8 @@ export default function BookGrid({ books }: BookGridProps) {
             href={`/books/${book.slug}/${defaultLang}`}
             className={styles.card}
             dir={bookDir(book.language)}
+            target="_blank"
+            rel="noopener noreferrer"
           >
             <span className={styles.cover}>
               {book.coverImage ? (

@@ -9,6 +9,15 @@
 
 .readerRow {
   position: relative;
+
+  /* Perspective for .viewport's rigid rotateY page-turn (see
+     .flippingOutNext etc. below and turnPage() in Reader.tsx). This has to
+     live on the PARENT of the element being 3D-transformed, not on that
+     element itself -- perspective set directly on .viewport would only
+     apply to viewport's OWN children (.pages), not to viewport's own
+     transform, and the flip would render as a flat squash instead of a
+     page turning in real depth. */
+  perspective: 1800px;
 }
 
 .viewport {
@@ -23,9 +32,12 @@
   touch-action: pan-y;
   user-select: text;
 
-  /* Gives the .turning rotateY flair (below) some actual depth instead of
-     looking like a flat squash. */
-  perspective: 1400px;
+  /* No visible back face exists (there's nothing rendered "behind" the
+     current page -- the .flipping* classes below swap the actual content
+     via the existing translateX pagination while the box is edge-on and
+     invisible, not by revealing a mirrored reverse side), so this just
+     guards against a stray mirrored flash at the extreme angles. */
+  backface-visibility: hidden;
 }
 
 .pages {
@@ -44,33 +56,103 @@
   will-change: transform;
 }
 
-/* Brief decorative "flip" flourish, played on the viewport (not .pages)
-   each time the page changes -- see the useEffect keyed on currentPage in
-   Reader.tsx. Living on a different element/property than the .pages
-   translateX means it never competes with or delays the actual page
-   positioning; it's purely a visual tilt + dip layered on top of the
-   slide that's already happening underneath. */
-@keyframes pageFlipFlair {
-  0% {
-    transform: rotateY(0deg) scale(1);
+/* Suppresses .pages' own translateX transition while a rigid flip
+   (below) is in flight -- see turnPage() in Reader.tsx, which applies this
+   class for the whole out+in duration. Without it, the moment currentPage
+   actually changes (at the out/in swap, while the viewport is edge-on) the
+   translateX slide would run its own separate 300ms animation underneath
+   the rotation, finishing later than the flip and producing a visible
+   double-motion (page still sliding sideways after it's already "landed"
+   face-on). jumpToChapter's instant TOC jumps never apply this class, so
+   they keep the original smooth slide untouched. */
+.pagesNoTransition {
+  transition: none;
+}
+
+/* Rigid 3D page-turn: the whole .viewport (never .pages or the book
+   content itself) rotates edge-on and back, in two CSS-animation phases
+   that Reader.tsx's turnPage() times to meet at the invisible ~90deg
+   midpoint -- the actual page swap (the existing, untouched .pages
+   translateX, via goToPage) happens right there, while the box is edge-on,
+   so it's never seen mid-transform. Two separate phases/classes rather
+   than one continuous 0->90->0 keyframe because the content genuinely
+   changes partway through (old page for "out", new page for "in").
+   Durations here (260ms each) must match Reader.tsx's FLIP_PHASE_MS --
+   they're what times the content swap to actually land at the midpoint.
+
+   The hinge edge is tied to navigation direction (next vs prev), not to
+   the book's own reading direction (contrast with .pages' translateX sign,
+   which DOES depend on it -- see the ReaderProps.dir comment in
+   Reader.tsx): "next" always hinges left, "prev" always hinges right,
+   regardless of whether the book itself is LTR or RTL. This is chrome-level
+   page-turn *gesture* feedback, not a mirror of the book's own layout. */
+@keyframes flipOutNext {
+  from {
+    transform: rotateY(0deg);
     filter: brightness(1);
   }
-  50% {
-    transform: rotateY(6deg) scale(0.985);
-    filter: brightness(0.9);
+  to {
+    transform: rotateY(-90deg);
+    filter: brightness(0.72);
   }
-  100% {
-    transform: rotateY(0deg) scale(1);
+}
+@keyframes flipInNext {
+  from {
+    transform: rotateY(90deg);
+    filter: brightness(0.72);
+  }
+  to {
+    transform: rotateY(0deg);
+    filter: brightness(1);
+  }
+}
+@keyframes flipOutPrev {
+  from {
+    transform: rotateY(0deg);
+    filter: brightness(1);
+  }
+  to {
+    transform: rotateY(90deg);
+    filter: brightness(0.72);
+  }
+}
+@keyframes flipInPrev {
+  from {
+    transform: rotateY(-90deg);
+    filter: brightness(0.72);
+  }
+  to {
+    transform: rotateY(0deg);
     filter: brightness(1);
   }
 }
 
-.turning {
-  animation: pageFlipFlair 320ms ease;
+.flippingOutNext {
+  transform-origin: left center;
+  animation: flipOutNext 260ms ease-in forwards;
+  will-change: transform;
+}
+.flippingInNext {
+  transform-origin: left center;
+  animation: flipInNext 260ms ease-out forwards;
+  will-change: transform;
+}
+.flippingOutPrev {
+  transform-origin: right center;
+  animation: flipOutPrev 260ms ease-in forwards;
+  will-change: transform;
+}
+.flippingInPrev {
+  transform-origin: right center;
+  animation: flipInPrev 260ms ease-out forwards;
+  will-change: transform;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .turning {
+  .flippingOutNext,
+  .flippingInNext,
+  .flippingOutPrev,
+  .flippingInPrev {
     animation: none;
   }
   .pages {
