@@ -37,7 +37,15 @@ export const metadata: Metadata = {
   description: "A Jamstack book catalog built with Next.js",
 };
 
-// Keep these key names in sync with lib/preferences.ts.
+// Keep these key names, and the locale-swap logic, in sync with
+// lib/preferences.ts and lib/uiLocale.ts (applyUiLocaleToDom) respectively
+// -- this hand-written copy is what makes a returning visitor's saved
+// theme/text-size/UI-language apply before first paint instead of
+// flashing the defaults first. Every translatable string is rendered
+// server-side in the default locale (English) with its Hebrew/Russian
+// text stashed in data-i18n-<locale> attributes (see lib/uiLocale.ts's
+// i18nProps/titleCount/etc.) precisely so this script has real text to
+// swap to without a round-trip.
 const THEME_BOOTSTRAP_SCRIPT = `
 (function () {
   try {
@@ -49,6 +57,24 @@ const THEME_BOOTSTRAP_SCRIPT = `
     if (scale) {
       document.documentElement.style.setProperty("--font-scale", scale);
     }
+
+    var locale = localStorage.getItem("ui:locale");
+    if (locale === "he" || locale === "ru") {
+      document.documentElement.setAttribute("lang", locale);
+      document.documentElement.setAttribute("dir", locale === "he" ? "rtl" : "ltr");
+      document.documentElement.setAttribute("data-ui-locale", locale);
+
+      var nodes = document.querySelectorAll("[data-i18n-" + locale + "]");
+      for (var i = 0; i < nodes.length; i++) {
+        var text = nodes[i].getAttribute("data-i18n-" + locale);
+        if (text !== null) nodes[i].textContent = text;
+      }
+
+      var dirRoots = document.querySelectorAll("[data-ui-dir-root]");
+      for (var j = 0; j < dirRoots.length; j++) {
+        dirRoots[j].setAttribute("dir", locale === "he" ? "rtl" : "ltr");
+      }
+    }
   } catch (error) {
     // localStorage can throw in some privacy modes -- fall back to defaults.
   }
@@ -59,6 +85,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en"
+      dir="ltr"
       className={`${serif.variable} ${sansEditorial.variable} ${monoEditorial.variable}`}
     >
       <body>

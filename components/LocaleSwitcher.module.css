@@ -1,0 +1,26 @@
+.switcher {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.pill {
+  font-family: var(--font-mono-editorial), ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--hairline-strong);
+  background: var(--paper-2);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.pill:hover {
+  border-color: var(--oxblood);
+  color: var(--oxblood);
+}
+
+.pill[aria-current="true"] {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: var(--oxblood-ink);
+}

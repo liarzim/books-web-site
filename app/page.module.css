@@ -45,6 +45,13 @@
   margin: 0;
 }
 
+.mastheadActions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .adminLink {
   font-family: var(--font-mono-editorial), ui-monospace, monospace;
   font-size: 0.72rem;
