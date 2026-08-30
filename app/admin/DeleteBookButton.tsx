@@ -10,12 +10,11 @@ interface DeleteBookButtonProps {
 }
 
 /**
- * Delete link shown directly on the book list row -- previously the only
- * way to delete a book was to open its full edit form first (BookForm.tsx
- * has always had a delete button, just buried at the bottom of that page).
- * This calls the same DELETE /api/admin/books/[slug] route that button
- * does, so it's the identical operation, just reachable without a detour
- * through Edit.
+ * Delete link shown directly on the book list row -- deletes the whole
+ * book, every language translation it has (see the DELETE handler at
+ * /api/admin/books/[slug]). Deleting just one translation is done from
+ * that translation's own edit page instead (BookForm.tsx's delete
+ * button), which targets /api/admin/books/[slug]/[lang].
  */
 export default function DeleteBookButton({ slug, title }: DeleteBookButtonProps) {
   const router = useRouter();
@@ -23,7 +22,7 @@ export default function DeleteBookButton({ slug, title }: DeleteBookButtonProps)
   const [error, setError] = useState<string | null>(null);
 
   const handleDelete = async () => {
-    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) {
+    if (!window.confirm(`Delete "${title}" -- every translation? This cannot be undone.`)) {
       return;
     }
 

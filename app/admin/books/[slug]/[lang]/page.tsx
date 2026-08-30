@@ -1,19 +1,19 @@
 import { notFound, redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/adminAuth";
 import { getBookSource } from "@/lib/books";
-import BookForm from "../BookForm";
-import styles from "../../admin.module.css";
+import BookForm from "../../BookForm";
+import styles from "../../../admin.module.css";
 
 type PageProps = {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ slug: string; lang: string }>;
 };
 
 export default async function EditBookPage({ params }: PageProps) {
   const session = await getAdminSession();
   if (!session) redirect("/admin");
 
-  const { slug } = await params;
-  const book = getBookSource(slug);
+  const { slug, lang } = await params;
+  const book = getBookSource(slug, lang);
   if (!book) notFound();
 
   return (

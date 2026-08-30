@@ -33,10 +33,10 @@ export interface BookFrontmatter {
   introduction?: string;
   /**
    * A CMS-authored slug, used by the admin editor only to name the file
-   * when a book is first created (content/books/<slug>.md). It is NOT the
-   * routing source of truth after that -- the filename is. See
-   * getAllBooksMeta / getBookBySlug below, which always let the
-   * filename-derived slug win.
+   * when a book is first created (content/books/<slug>/<lang>.md). It is
+   * NOT the routing source of truth after that -- the directory name is.
+   * See getAllBooksMeta / getBookBySlug below, which always let the
+   * directory-derived slug win.
    */
   slug?: string;
 }
@@ -60,36 +60,93 @@ export interface Book extends BookMeta {
 }
 
 /**
- * All book slugs, derived from filenames in content/books.
+ * Every book is a directory under content/books, one Markdown file per
+ * language translation inside it (content/books/<slug>/<lang>.md). This
+ * lets a single book ("we") carry a Hebrew original and, later, an English
+ * translation side by side without either one owning the slug.
+ */
+function isBookDirectory(entryName: string): boolean {
+  const fullPath = path.join(booksDirectory, entryName);
+  return fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory();
+}
+
+/**
+ * All book slugs, derived from directory names in content/books.
  * Used by generateStaticParams to pre-render every book page at build time.
  */
 export function getBookSlugs(): string[] {
   if (!fs.existsSync(booksDirectory)) return [];
 
-  return fs
-    .readdirSync(booksDirectory)
-    .filter((fileName) => fileName.endsWith(".md"))
-    .map((fileName) => fileName.replace(/\.md$/, ""));
+  return fs.readdirSync(booksDirectory).filter(isBookDirectory);
 }
 
 /**
- * Frontmatter-only metadata for every book, for listing pages.
+ * Language codes available for a given book slug, derived from the
+ * filenames inside content/books/<slug>/ (e.g. ["he", "en"]). Sorted so
+ * callers get a stable, predictable order.
+ */
+export function getBookLanguages(slug: string): string[] {
+  const dir = path.join(booksDirectory, slug);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
+
+  return fs
+    .readdirSync(dir)
+    .filter((fileName) => fileName.endsWith(".md"))
+    .map((fileName) => fileName.replace(/\.md$/, ""))
+    .sort();
+}
+
+/**
+ * The language to show when a route doesn't specify one -- the public book
+ * page (content/books/<slug>) and getAllBooksMeta's listing entry both fall
+ * back to this. Prefers "he" (today's only language) if present, otherwise
+ * whichever language sorts first, so a book is never unreachable just
+ * because its first translation isn't Hebrew.
+ */
+export function getDefaultBookLanguage(slug: string): string | null {
+  const languages = getBookLanguages(slug);
+  if (languages.length === 0) return null;
+  return languages.includes("he") ? "he" : languages[0];
+}
+
+/**
+ * Resolves a (slug, lang) pair to its file path on disk. When `lang` is
+ * omitted, falls back to getDefaultBookLanguage. Returns null if the book
+ * or the requested language doesn't exist.
+ */
+function resolveBookFilePath(slug: string, lang?: string): string | null {
+  const resolvedLang = lang ?? getDefaultBookLanguage(slug);
+  if (!resolvedLang) return null;
+
+  const fullPath = path.join(booksDirectory, slug, `${resolvedLang}.md`);
+  return fs.existsSync(fullPath) ? fullPath : null;
+}
+
+/**
+ * Frontmatter-only metadata for every book, for listing pages. One entry
+ * per slug (its default-language translation), regardless of how many
+ * languages that book actually has -- the listing page itself doesn't need
+ * to change for Phase 1.
  */
 export function getAllBooksMeta(): BookMeta[] {
   return getBookSlugs()
-    .map((fileSlug) => {
-      const fullPath = path.join(booksDirectory, `${fileSlug}.md`);
+    .map((slug) => {
+      const fullPath = resolveBookFilePath(slug);
+      if (!fullPath) return null;
+
       const fileContents = fs.readFileSync(fullPath, "utf8");
       const { data } = matter(fileContents);
 
-      // Spread frontmatter first, then force the filename-derived slug --
-      // if a frontmatter `slug` field disagrees with the actual filename,
-      // the filename must win, since that's what routing actually uses.
+      // Spread frontmatter first, then force the directory-derived slug --
+      // if a frontmatter `slug` field disagrees with the actual directory
+      // name, the directory must win, since that's what routing actually
+      // uses.
       return {
         ...(data as BookFrontmatter),
-        slug: fileSlug,
+        slug,
       };
     })
+    .filter((meta): meta is BookMeta => meta !== null)
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
@@ -170,12 +227,14 @@ function injectHeadingIds(bodyHtml: string, toc: TocEntry[] | undefined): string
 
 /**
  * Full book, including frontmatter and the Markdown body rendered to HTML.
- * Returns null if no Markdown file matches the given slug.
+ * Returns null if no Markdown file matches the given slug (and, when
+ * given, language). When `lang` is omitted, resolves to the book's
+ * default language -- see getDefaultBookLanguage.
  */
-export async function getBookBySlug(slug: string): Promise<Book | null> {
-  const fullPath = path.join(booksDirectory, `${slug}.md`);
+export async function getBookBySlug(slug: string, lang?: string): Promise<Book | null> {
+  const fullPath = resolveBookFilePath(slug, lang);
 
-  if (!fs.existsSync(fullPath)) {
+  if (!fullPath) {
     return null;
   }
 
@@ -210,11 +269,12 @@ export interface BookSource extends BookMeta {
  * Like getBookBySlug, but returns the raw Markdown body instead of
  * rendered HTML. Used by the admin editor: editing rendered HTML would be
  * wrong, since the file on disk (and in the GitHub commit) is Markdown.
+ * When `lang` is omitted, resolves to the book's default language.
  */
-export function getBookSource(slug: string): BookSource | null {
-  const fullPath = path.join(booksDirectory, `${slug}.md`);
+export function getBookSource(slug: string, lang?: string): BookSource | null {
+  const fullPath = resolveBookFilePath(slug, lang);
 
-  if (!fs.existsSync(fullPath)) {
+  if (!fullPath) {
     return null;
   }
 

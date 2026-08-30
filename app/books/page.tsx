@@ -13,7 +13,7 @@ export default function BooksIndexPage() {
       <h1>Books</h1>
 
       {books.length === 0 ? (
-        <p>No books yet — add a Markdown file to content/books.</p>
+        <p>No books yet — add a Markdown file to content/books/&lt;slug&gt;.</p>
       ) : (
         <ul style={{ listStyle: "none", padding: 0 }}>
           {books.map((book) => (

@@ -24,13 +24,22 @@ export interface BookFormValues {
 interface BookFormProps {
   mode: "create" | "edit";
   initialValues: BookFormValues;
+  /**
+   * Locks the slug field in create mode too, pre-filled and undeletable --
+   * used by the "add a translation" flow (/admin/books/new?slug=<slug>),
+   * where the new file has to join an existing book rather than start a
+   * new one. Ignored in edit mode, where the slug is always locked anyway.
+   */
+  lockSlug?: boolean;
 }
 
-export default function BookForm({ mode, initialValues }: BookFormProps) {
+export default function BookForm({ mode, initialValues, lockSlug = false }: BookFormProps) {
   const router = useRouter();
   const [values, setValues] = useState<BookFormValues>(initialValues);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const slugLocked = mode === "edit" || lockSlug;
 
   const updateField = <K extends keyof BookFormValues>(
     key: K,
@@ -72,7 +81,9 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
     };
 
     const url =
-      mode === "create" ? "/api/admin/books" : `/api/admin/books/${initialValues.slug}`;
+      mode === "create"
+        ? "/api/admin/books"
+        : `/api/admin/books/${initialValues.slug}/${initialValues.language}`;
     const method = mode === "create" ? "POST" : "PUT";
 
     try {
@@ -84,14 +95,15 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
 
       const data = (await response.json().catch(() => ({}))) as {
         slug?: string;
+        lang?: string;
         error?: string;
       };
 
-      if (!response.ok || !data.slug) {
+      if (!response.ok || !data.slug || !data.lang) {
         throw new Error(data.error ?? `Save failed (${response.status})`);
       }
 
-      router.push(`/admin/books/${data.slug}`);
+      router.push(`/admin/books/${data.slug}/${data.lang}`);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -102,7 +114,11 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
 
   const handleDelete = async () => {
     if (mode !== "edit") return;
-    if (!window.confirm(`Delete "${values.title || initialValues.slug}"? This cannot be undone.`)) {
+    if (
+      !window.confirm(
+        `Delete the "${initialValues.language}" translation of "${values.title || initialValues.slug}"? This cannot be undone.`,
+      )
+    ) {
       return;
     }
 
@@ -110,9 +126,10 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
     setError(null);
 
     try {
-      const response = await fetch(`/api/admin/books/${initialValues.slug}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `/api/admin/books/${initialValues.slug}/${initialValues.language}`,
+        { method: "DELETE" },
+      );
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error ?? `Delete failed (${response.status})`);
@@ -139,13 +156,18 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
           type="text"
           value={values.slug}
           onChange={(event) => updateField("slug", event.target.value)}
-          disabled={mode === "edit"}
+          disabled={slugLocked}
           placeholder="dune"
           required
         />
         {mode === "edit" && (
           <span className={styles.hint}>
-            Not editable after creation — it&apos;s the filename and URL.
+            Not editable after creation — it&apos;s the folder name and URL.
+          </span>
+        )}
+        {mode === "create" && lockSlug && (
+          <span className={styles.hint}>
+            Locked — adding a translation to an existing book.
           </span>
         )}
       </label>
@@ -175,10 +197,17 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
         <select
           value={values.language}
           onChange={(event) => updateField("language", event.target.value)}
+          disabled={mode === "edit"}
         >
           <option value="en">English</option>
           <option value="he">Hebrew</option>
         </select>
+        {mode === "edit" && (
+          <span className={styles.hint}>
+            Not editable after creation — it&apos;s the filename. Delete this
+            translation and add a new one to change it.
+          </span>
+        )}
       </label>
 
       <label className={styles.field}>
@@ -264,7 +293,7 @@ export default function BookForm({ mode, initialValues }: BookFormProps) {
             disabled={submitting}
             className={styles.deleteButton}
           >
-            Delete book
+            Delete this translation
           </button>
         )}
       </div>

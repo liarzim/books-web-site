@@ -11,7 +11,7 @@ type PageProps = {
   params: Promise<PageParams>;
 };
 
-// Pre-render every book page at build time from content/books/*.md —
+// Pre-render every book page at build time from content/books/<slug>/*.md —
 // this is what makes the route static (Jamstack) rather than
 // server-rendered on every request.
 export async function generateStaticParams(): Promise<PageParams[]> {

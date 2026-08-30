@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getAdminSession } from "@/lib/adminAuth";
-import { getAllBooksMeta } from "@/lib/books";
+import { getAllBooksMeta, getBookLanguages } from "@/lib/books";
 import DeleteBookButton from "./DeleteBookButton";
 import styles from "./admin.module.css";
 
@@ -54,18 +54,35 @@ export default async function AdminPage() {
         <p>No books yet.</p>
       ) : (
         <ul className={styles.bookList}>
-          {books.map((book) => (
-            <li key={book.slug} className={styles.bookRow}>
-              <span>
-                {book.title}{" "}
-                <span className={styles.bookMeta}>({book.slug})</span>
-              </span>
-              <span className={styles.bookRowActions}>
-                <Link href={`/admin/books/${book.slug}`}>Edit</Link>
-                <DeleteBookButton slug={book.slug} title={book.title} />
-              </span>
-            </li>
-          ))}
+          {books.map((book) => {
+            const languages = getBookLanguages(book.slug);
+            return (
+              <li key={book.slug} className={styles.bookRow}>
+                <span>
+                  {book.title}{" "}
+                  <span className={styles.bookMeta}>({book.slug})</span>
+                </span>
+                <span className={styles.bookRowActions}>
+                  {languages.map((lang) => (
+                    <Link
+                      key={lang}
+                      href={`/admin/books/${book.slug}/${lang}`}
+                      className={styles.langBadge}
+                    >
+                      {lang.toUpperCase()}
+                    </Link>
+                  ))}
+                  <Link
+                    href={`/admin/books/new?slug=${book.slug}`}
+                    className={styles.langBadge}
+                  >
+                    + Translation
+                  </Link>
+                  <DeleteBookButton slug={book.slug} title={book.title} />
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </main>
