@@ -182,6 +182,7 @@ export default function Reader({ slug, lang, dir = "ltr", toc, title, author }: 
 
   const flipBookRef = useRef<HTMLFlipBook | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const flipStageRef = useRef<HTMLDivElement | null>(null);
   const hasRestoredPositionRef = useRef(false);
   const positionKey = `${slug}:${lang}`;
 
@@ -252,6 +253,152 @@ export default function Reader({ slug, lang, dir = "ltr", toc, title, author }: 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [manifest, isRtl, goNext, goPrev]);
+
+  // react-pageflip has no concept of RTL (see the ReaderProps.dir comment):
+  // when you click or drag directly on the book, it decides which way to
+  // flip using the RAW pointer position relative to its own container's
+  // bounding box -- computed BEFORE our CSS mirror (styles.rtlFlip) is
+  // applied. A CSS transform changes what's painted, not the box a real
+  // getBoundingClientRect() reports, so the library always reads a click on
+  // the physical right half as "forward", exactly like an LTR book, no
+  // matter how the content is mirrored on screen. The two edge buttons are
+  // unaffected -- they call flipNext()/flipPrev() with fixed synthetic
+  // points, never real pointer coordinates -- but a direct click or drag on
+  // the book itself flips the wrong way for a Hebrew/RTL reader.
+  //
+  // First attempt at a fix reconstructed and re-dispatched native
+  // mousedown/mousemove/mouseup DOM events with a mirrored clientX. That
+  // turned out to be unreliable -- redispatching a synthetic event
+  // re-entrantly from inside another event's own capture-phase handler
+  // raced with the browser/library's own state tracking and intermittently
+  // produced no flip at all, or the wrong one. The library's PageFlip
+  // instance (reached via HTMLFlipBook's ref, same as goNext/goPrev above)
+  // exposes the exact methods its own mouse/touch listeners call --
+  // startUserTouch/userMove/userStop -- as public API, so instead of
+  // simulating input events we call those directly with a mirrored
+  // position, after silencing the real event so the library's own raw
+  // (unmirrored) listener never also processes it. No event synthesis, no
+  // re-entrancy.
+  useEffect(() => {
+    if (!isRtl || !manifest) return;
+    const stage = flipStageRef.current;
+    if (!stage) return;
+
+    let dragging = false;
+
+    const getDistElement = (): HTMLElement | null => stage.querySelector(".stf__block");
+
+    const getPageFlip = () => flipBookRef.current?.pageFlip();
+
+    // Mirrors a client-space point into distElement-relative coordinates
+    // with x flipped around the element's own horizontal center -- exactly
+    // what UI.ts's getMousePos() would produce from a physically-mirrored
+    // click, i.e. what the RTL-mirrored page painted at that point.
+    const toMirroredBookPos = (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const distEl = getDistElement();
+      if (!distEl) return null;
+      const rect = distEl.getBoundingClientRect();
+      return {
+        x: rect.width - (clientX - rect.left),
+        y: clientY - rect.top,
+      };
+    };
+
+    const targetIsInsideBook = (event: Event): boolean => {
+      const distEl = getDistElement();
+      return !!distEl && event.target instanceof Node && distEl.contains(event.target);
+    };
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (!targetIsInsideBook(event)) return;
+      const pos = toMirroredBookPos(event.clientX, event.clientY);
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      dragging = true;
+      event.stopPropagation();
+      event.preventDefault();
+      pf.startUserTouch(pos);
+    };
+
+    const onMouseMove = (event: MouseEvent) => {
+      // Only intercept while WE started the touch (a real drag after our
+      // own mousedown). Plain hovering (no mousedown yet) is left to the
+      // library's own unmirrored listener -- it only drives the corner-fold
+      // hover hint, which is cosmetic, and leaving it alone avoids feeding
+      // the library a mirrored position while `isUserTouch` is still false
+      // (it would route into showCorner()/fold() with a position system
+      // that method doesn't expect outside of an active touch).
+      if (!dragging) return;
+      const pos = toMirroredBookPos(event.clientX, event.clientY);
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      event.stopPropagation();
+      pf.userMove(pos, false);
+    };
+
+    const onMouseUp = (event: MouseEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      const pos = toMirroredBookPos(event.clientX, event.clientY);
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      event.stopPropagation();
+      pf.userStop(pos);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (!targetIsInsideBook(event) || event.touches.length === 0) return;
+      const touch = event.touches[0];
+      const pos = toMirroredBookPos(touch.clientX, touch.clientY);
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      dragging = true;
+      event.stopPropagation();
+      pf.startUserTouch(pos);
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!dragging || event.touches.length === 0) return;
+      const touch = event.touches[0];
+      const pos = toMirroredBookPos(touch.clientX, touch.clientY);
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      event.stopPropagation();
+      pf.userMove(pos, true);
+    };
+
+    const onTouchEnd = (event: TouchEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      const touch = event.changedTouches[0];
+      const pos = touch ? toMirroredBookPos(touch.clientX, touch.clientY) : null;
+      const pf = getPageFlip();
+      if (!pos || !pf) return;
+      event.stopPropagation();
+      pf.userStop(pos);
+    };
+
+    // capture:true on window so this always runs before the library's own
+    // bubble-phase listeners (distElement.addEventListener for down/start,
+    // window.addEventListener for move/up/end -- see page-flip's UI.ts),
+    // and stopPropagation() keeps the raw, unmirrored event from ever
+    // reaching them once we've handled it ourselves.
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    window.addEventListener("touchstart", onTouchStart, true);
+    window.addEventListener("touchmove", onTouchMove, true);
+    window.addEventListener("touchend", onTouchEnd, true);
+
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("mousemove", onMouseMove, true);
+      window.removeEventListener("mouseup", onMouseUp, true);
+      window.removeEventListener("touchstart", onTouchStart, true);
+      window.removeEventListener("touchmove", onTouchMove, true);
+      window.removeEventListener("touchend", onTouchEnd, true);
+    };
+  }, [isRtl, manifest]);
 
   const handleInit = useCallback(() => {
     if (hasRestoredPositionRef.current || !manifest) return;
@@ -368,7 +515,11 @@ export default function Reader({ slug, lang, dir = "ltr", toc, title, author }: 
           <ChevronIcon direction="start" />
         </button>
 
-        <div className={`${styles.flipStage} ${flipMirrorClass}`} style={{ "--zoom": zoom } as CSSProperties}>
+        <div
+          ref={flipStageRef}
+          className={`${styles.flipStage} ${flipMirrorClass}`}
+          style={{ "--zoom": zoom } as CSSProperties}
+        >
           <HTMLFlipBook
             ref={flipBookRef}
             width={PAGE_WIDTH}
