@@ -3,791 +3,752 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  type TouchEvent as ReactTouchEvent,
 } from "react";
+import HTMLFlipBook from "react-pageflip";
 import styles from "./Reader.module.css";
-import {
-  readPaginationCache,
-  readReadingPosition,
-  writePaginationCache,
-  writeReadingPosition,
-  type PaginationSpacerPlanEntry,
-} from "@/lib/preferences";
+import { readReadingPosition, writeReadingPosition } from "@/lib/preferences";
+import { readUiLocale } from "@/lib/uiLocale";
 import type { TocEntry } from "@/lib/books";
 
 interface ReaderProps {
-  /**
-   * Pre-rendered book content, as a Server Component subtree (see
-   * app/books/[slug]/page.tsx) rather than an HTML string prop. Passing it
-   * as `children` instead of e.g. `contentHtml: string` means Next.js
-   * treats it as an opaque, already-rendered reference: a large book's
-   * markup is emitted once in the page's HTML, not a second time in the
-   * RSC/Flight hydration payload the way a big string prop on a "use
-   * client" component would be. The one structural cost is that whatever
-   * page.tsx passes in must carry a `data-book-content` marker on its
-   * outermost element -- see getBookContentRoot below -- since
-   * dangerouslySetInnerHTML can't be set directly on a Fragment, so
-   * there's necessarily one wrapper div between `.pages` and the book's
-   * actual first element (the cover).
-   */
-  children: ReactNode;
-  /**
-   * Fingerprint of the rendered content, computed once server-side in
-   * lib/books.ts (Book.contentHash). Used only as the pagination cache key
-   * in enforceChapterPageStarts -- see the comment there for why this is a
-   * separate small prop instead of re-hashing `children` on the client
-   * (which isn't a string here, and shouldn't need to be read as one).
-   */
-  contentHash: string;
-  /** Book slug, used as the localStorage key for the saved read position. */
+  /** Book slug -- also the first path segment of its generated page images. */
   slug: string;
   /**
-   * Text direction of the book's content -- see lib/rtl.ts. This isn't
-   * just cosmetic: CSS multi-column layout overflows to the RIGHT
-   * (increasing x) for `direction: ltr` content but to the LEFT
-   * (decreasing x) for `direction: rtl` content, since that's the
-   * direction the columns actually fill in. The page-turn transform below
-   * has to move the opposite way to match, or every page past the first
-   * lands on empty overflow space instead of the next column of text.
+   * Language code (e.g. "he"), the second path segment of its generated
+   * page images: public/book-pages/<slug>/<lang>/page-NNNN.webp plus a
+   * manifest.json alongside them (see PageManifest below). Reading position
+   * is namespaced by both slug AND lang -- two translations of the same
+   * book paginate differently, so a saved page index from one is meaningless
+   * (and could be entirely out of range) for the other.
+   */
+  lang: string;
+  /**
+   * Text direction of the book's content -- see lib/rtl.ts. react-pageflip
+   * has no concept of RTL of its own (checked its README: no mention of
+   * RTL/direction/Hebrew/Arabic at all), so an RTL book is rendered by
+   * mirroring the WHOLE flipbook horizontally (styles.rtlFlip) and then
+   * mirroring each page's image a second time (styles.rtlPage) to cancel
+   * that back out for the actual picture. Net effect: page content reads
+   * normally, but the book opens from the right and "next" turns pages
+   * right-to-left, exactly like a physical Hebrew book -- see the
+   * goNext/goPrev comment below for why this needs no other RTL-specific
+   * branching anywhere else in this component.
    */
   dir?: "rtl" | "ltr";
   /**
-   * Chapter table of contents (from the book's frontmatter). Each entry's
-   * `anchor` must match an `id="..."` stamped onto the corresponding
-   * chapter heading by lib/books.ts (injectHeadingIds), which is how the
-   * jump-to-chapter panel below finds where each chapter actually landed.
+   * Chapter table of contents (from the book's frontmatter, via
+   * lib/books.ts) -- the LABELS live here, server-rendered, same as
+   * before. Only the per-chapter PAGE NUMBER comes from the generated
+   * manifest (PageManifest.chapterPages) instead: labels are hand-authored
+   * content and stay in the single place that already owns them; page
+   * numbers are a derived-from-images artifact and belong with the other
+   * generated indexing data.
    */
   toc?: TocEntry[];
-}
-
-const SWIPE_THRESHOLD_PX = 50;
-
-// Marks a spacer element inserted by enforceChapterPageStarts, so a later
-// call can find and remove its own previous work before recomputing.
-const CHAPTER_SPACER_ATTR = "data-chapter-spacer";
-
-// Safety cap on how many correction rounds enforceChapterPageStarts will
-// run (see that function). This has to scale roughly 1:1 with the number
-// of chapters -- NOT a small constant -- because forcing a chapter to
-// start a fresh SPREAD (see the "starts mid-spread" case below) shifts
-// every later chapter by a whole column too, which flips THEIR spread
-// parity and can make a chapter that was already fine need a correction
-// next round. Fixing chapter N can un-fix chapter N+1, whose fix un-fixes
-// N+2, and so on -- empirically this cascades through the full 59-chapter
-// real book and only finishes converging around round 56. 100 leaves
-// headroom for a somewhat longer book without the cap silently starting
-// to matter.
-const MAX_CHAPTER_SPACER_ROUNDS = 100;
-
-// `pages` (the column-count element) now wraps the book's actual content
-// in one extra `data-book-content` div (see the ReaderProps.children
-// comment) instead of the cover being pages.firstElementChild directly.
-// This is the shared lookup for "the real first content element", used
-// everywhere that used to assume pages.firstElementChild was the cover --
-// falls back to pages.firstElementChild so a caller never sees null just
-// because the marker is missing for some reason.
-function getBookContentRoot(pages: HTMLElement): HTMLElement | null {
-  return (
-    pages.querySelector<HTMLElement>("[data-book-content]") ??
-    (pages.firstElementChild as HTMLElement | null)
-  );
+  title: string;
+  author: string;
 }
 
 /**
- * Makes every chapter start at the top of a fresh virtual PAGE (not just a
- * fresh CSS column), instead of wherever it happens to land after the
- * previous chapter's last paragraph.
- *
- * The obvious tool for this is CSS's `break-before: column` on each
- * chapter heading -- and Reader.module.css tried exactly that first. It is
- * NOT reliable here: verified empirically against the full real book (59
- * chapters, ~1000 virtual pages), Chromium's multicol fragmentation
- * silently drops most forced breaks once a document reaches that scale, in
- * a way that depends on exactly what content happens to precede each one
- * -- every break-before/-after variant tried (including the legacy
- * `page-break-before` and `-webkit-column-break-before` aliases) left the
- * majority of chapters starting mid-page. This does the same job from JS
- * instead, which is reliable regardless of surrounding content: measure
- * how far into its current column each chapter heading actually landed,
- * and insert a spacer sized to exactly consume the rest of that column so
- * the heading overflows into a fresh one.
- *
- * There are two distinct ways a heading can be "mid-page", and both need
- * correcting:
- *
- * 1. Mid-COLUMN: the heading isn't even at the top of its own CSS column
- *    (`offsetTop` is somewhere in the middle). This is the only case that
- *    exists at mobile width, where one column IS one page.
- * 2. Mid-SPREAD (desktop only, where Reader.module.css sets
- *    `column-count: 2`): the heading IS at the top of its column, but
- *    that column is the SECOND of the two columns making up one visible
- *    page -- so it shares a page with whatever precedes it (the tail of
- *    the previous chapter, or, for chapter 1, the cover). Left alone,
- *    this is what made the cover and chapter 1 visually share the first
- *    page. Telling columns 1-of-2 and 2-of-2 apart needs a column index
- *    across the WHOLE flow, not just "is offsetTop 0" -- see the
- *    offsetLeft-based columnIndex math below, which needs the same
- *    firstColumnOffsetLeft reference-point correction as recalculate()'s
- *    chapterPages calculation, for the same reason (see the comment
- *    there).
- *
- * Inserting a spacer before chapter N shifts every chapter after it too,
- * so one pass isn't enough. This iterates in rounds instead of correcting
- * one heading at a time: within a round, every heading's offsetTop AND
- * offsetLeft are read BEFORE any spacer is written for that round (a
- * batched read), and then every needed spacer is inserted with no reads in
- * between (a batched write). Interleaving a read after each individual
- * write -- i.e. doing this heading-by-heading -- forces a full-document
- * layout reflow per heading, which measured over 11 SECONDS on this book;
- * batching each round down to a single reflow (one for the round's reads,
- * implicitly one more triggered by the next round's reads) brought the
- * column-only version of this under a second. Adding the mid-spread case
- * makes the corrections cascade much further (see
- * MAX_CHAPTER_SPACER_ROUNDS above), which costs more rounds and measured
- * at ~3.5 seconds on the real book at desktop width -- still far better
- * than the 11-second naive version, but a real, user-visible cost worth
- * knowing about if pagination setup ever needs to feel instant.
- *
- * That ~3.5s is the cost of *deriving* the spacer plan, not of the plan
- * itself -- and the plan only depends on (slug, viewport width, column
- * height, content), all of which are normally identical the next time
- * the same book opens on the same device. So the result is cached (see
- * lib/preferences.ts's read/writePaginationCache) and reused on a match,
- * skipping the round loop entirely in favor of one batched write plus
- * one verification read -- effectively two reflows instead of ~56.
- * Anything that could make a cached plan wrong (a font finishing loading
- * differently, a genuine content edit the hash didn't happen to catch,
- * etc.) is caught by that verification pass, which falls through to the
- * full round loop below exactly as if there had been no cache at all --
- * this is a pure speed path layered on top of the always-correct
- * algorithm, never a substitute for it.
+ * The generated indexing data for one book+language's page images, fetched
+ * client-side from public/book-pages/<slug>/<lang>/manifest.json (built by
+ * the offline generation pipeline -- see the pipeline's own README/scripts,
+ * not part of this repo's build). Deliberately just the parts that can only
+ * come from having actually rendered the pages: how many there are, which
+ * page each chapter anchor starts on, and every page's plain visible text
+ * (the search feature's index -- these are images with no text layer of
+ * their own, so this is what search actually matches against instead of an
+ * in-image or DOM text search).
  */
-function enforceChapterPageStarts(pages: HTMLElement, slug: string, contentHash: string) {
-  const columnHeight = pages.clientHeight;
-  if (!columnHeight) return;
-
-  // How many CSS columns make up one visible page (spread) at the current
-  // viewport width -- 1 on mobile, 2 at the desktop (min-width: 768px)
-  // breakpoint in Reader.module.css. Read from the computed style rather
-  // than assumed, so this keeps working if that breakpoint/column-count
-  // ever changes.
-  const columnsPerSpread = parseInt(getComputedStyle(pages).columnCount, 10) || 1;
-  const spreadWidth = pages.clientWidth;
-  if (!spreadWidth) return;
-  const columnStride = spreadWidth / columnsPerSpread;
-
-  // Reference point for "which column, overall, is this": the cover is
-  // always the first thing in the flow (lib/books.ts's buildCoverPageHtml
-  // is unconditionally prepended), so its offsetLeft is column index 0.
-  // See the comment on recalculate()'s positions calculation for why this
-  // reference point -- not zero -- has to be subtracted before dividing.
-  // Reached via getBookContentRoot rather than pages.firstElementChild
-  // directly, since that's now the data-book-content wrapper, not the
-  // cover itself -- see the ReaderProps.children comment.
-  const contentRoot = getBookContentRoot(pages);
-  const firstColumnOffsetLeft = contentRoot ? contentRoot.offsetLeft : 0;
-
-  pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
-
-  // A heading is still wrong (mid-column, or -- at desktop width -- at
-  // the top of a column that isn't the first of its spread) under
-  // whatever spacers currently exist in the DOM. Shared by the cache
-  // verification pass below, so both agree on exactly what "correct"
-  // means.
-  const findBadHeadings = () =>
-    Array.from(pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]')).filter((heading) => {
-      const offsetTop = heading.offsetTop;
-      const offsetLeft = heading.offsetLeft;
-      const midColumn = offsetTop > 1 && offsetTop < columnHeight;
-      const columnIndex = Math.round(
-        Math.abs(offsetLeft - firstColumnOffsetLeft) / columnStride,
-      );
-      const startsMidSpread =
-        columnsPerSpread > 1 && offsetTop <= 1 && columnIndex % columnsPerSpread !== 0;
-      return midColumn || startsMidSpread;
-    });
-
-  const cached = readPaginationCache(slug);
-  if (
-    cached &&
-    cached.width === spreadWidth &&
-    cached.columnHeight === columnHeight &&
-    cached.contentHash === contentHash
-  ) {
-    cached.spacers.forEach(({ headingId, heightPx }) => {
-      const heading = document.getElementById(headingId);
-      if (!heading) return;
-      const spacer = document.createElement("div");
-      spacer.setAttribute(CHAPTER_SPACER_ATTR, "true");
-      spacer.setAttribute("aria-hidden", "true");
-      spacer.style.height = `${heightPx}px`;
-      heading.parentNode?.insertBefore(spacer, heading);
-    });
-
-    // One verification reflow. If the cached plan still lands every
-    // heading correctly, we're done -- no round loop needed at all.
-    if (findBadHeadings().length === 0) return;
-
-    // Stale despite a matching key (e.g. fonts settled differently this
-    // load) -- discard it and fall through to a full, from-scratch
-    // recompute exactly as if this had been a cache miss.
-    pages.querySelectorAll(`[${CHAPTER_SPACER_ATTR}]`).forEach((el) => el.remove());
-  }
-
-  for (let round = 0; round < MAX_CHAPTER_SPACER_ROUNDS; round += 1) {
-    const headings = Array.from(
-      pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]'),
-    );
-    // Batched read.
-    const measurements = headings.map((heading) => ({
-      offsetTop: heading.offsetTop,
-      offsetLeft: heading.offsetLeft,
-    }));
-
-    // Batched write.
-    let insertedAny = false;
-    headings.forEach((heading, i) => {
-      const { offsetTop, offsetLeft } = measurements[i];
-      const midColumn = offsetTop > 1 && offsetTop < columnHeight;
-
-      const columnIndex = Math.round(
-        Math.abs(offsetLeft - firstColumnOffsetLeft) / columnStride,
-      );
-      const startsMidSpread =
-        columnsPerSpread > 1 && offsetTop <= 1 && columnIndex % columnsPerSpread !== 0;
-
-      if (midColumn || startsMidSpread) {
-        const spacer = document.createElement("div");
-        spacer.setAttribute(CHAPTER_SPACER_ATTR, "true");
-        spacer.setAttribute("aria-hidden", "true");
-        spacer.style.height = `${columnHeight - offsetTop}px`;
-        heading.parentNode?.insertBefore(spacer, heading);
-        insertedAny = true;
-      }
-    });
-
-    if (!insertedAny) break;
-  }
-
-  // A heading whose correction spanned multiple rounds can end up with
-  // several spacers stacked immediately before it -- each round's
-  // insertBefore lands right before the heading, ahead of any earlier
-  // round's spacer for that same heading, so they accumulate rather than
-  // replace each other. Consolidate each run into one spacer before
-  // reading the plan below: otherwise walking spacer.nextElementSibling
-  // would only capture the last (smallest, insufficient on its own)
-  // spacer per heading, silently truncating the cached plan.
-  pages.querySelectorAll<HTMLElement>('h1[id^="chapter-"]').forEach((heading) => {
-    let total = 0;
-    let node = heading.previousElementSibling as HTMLElement | null;
-    const run: HTMLElement[] = [];
-    while (node && node.hasAttribute(CHAPTER_SPACER_ATTR)) {
-      total += parseFloat(node.style.height) || 0;
-      run.push(node);
-      node = node.previousElementSibling as HTMLElement | null;
-    }
-    if (run.length > 1) {
-      run.slice(1).forEach((el) => el.remove());
-      run[0].style.height = `${total}px`;
-    }
-  });
-
-  // Save the plan just derived so the next load of this book, at this
-  // same width/column-height/content, can skip straight to the fast path
-  // above instead of paying for another full round loop.
-  const spacers: PaginationSpacerPlanEntry[] = [];
-  pages.querySelectorAll<HTMLElement>(`[${CHAPTER_SPACER_ATTR}]`).forEach((spacer) => {
-    const heading = spacer.nextElementSibling as HTMLElement | null;
-    if (heading?.id) {
-      spacers.push({ headingId: heading.id, heightPx: parseFloat(spacer.style.height) || 0 });
-    }
-  });
-  writePaginationCache(slug, { width: spreadWidth, columnHeight, contentHash, spacers });
+interface PageManifest {
+  pageCount: number;
+  chapterPages: Record<string, number>;
+  pageText: string[];
 }
 
-// Duration of EACH phase (out, then in) of the rigid page-turn flip -- see
-// turnPage() below and the .flippingOutNext/.flippingInNext/etc. keyframes
-// in Reader.module.css, which this must stay in sync with (their
-// animation-duration is this same number, hardcoded there for the same
-// reason FLIP_ANIMATION_MS used to be: a CSS file can't read a JS
-// constant). The content swap (goToPage) happens at the boundary between
-// the two phases, i.e. FLIP_PHASE_MS after a turn starts and again
-// FLIP_PHASE_MS after that.
-const FLIP_PHASE_MS = 260;
+// Must match build_page_html.py's PAGE_WIDTH/PAGE_HEIGHT in the generation
+// pipeline -- this is the aspect ratio react-pageflip lays pages out at,
+// not a hard pixel size (size="stretch" below lets it scale within
+// min/max bounds), but a mismatch here would letterbox or crop every page.
+const PAGE_WIDTH = 960;
+const PAGE_HEIGHT = 1360;
 
-// Turning a page is a single physical gesture from the user's point of
-// view -- checked in turnPage() below so a second ArrowRight/click/swipe
-// that arrives mid-flip is simply ignored (not queued, not restarted)
-// rather than fighting the in-flight animation's own timers.
-type FlipPhase = "out" | "in" | null;
+const ZOOM_STEPS = [1, 1.15, 1.3, 1.5] as const;
 
-// useLayoutEffect warns on the server; this swaps to a no-op-safe
-// useEffect there and only runs synchronously in the browser, where the
-// column measurements below actually need it.
-const useIsomorphicLayoutEffect =
-  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+function pageImageUrl(slug: string, lang: string, index: number): string {
+  return `/book-pages/${slug}/${lang}/page-${String(index).padStart(4, "0")}.webp`;
+}
 
-export default function Reader({
-  children,
-  contentHash,
-  slug,
-  dir = "ltr",
-  toc,
-}: ReaderProps) {
-  // See the ReaderProps.dir comment: RTL columns overflow leftward, so the
-  // sign of the page-turn transform has to flip to follow them there.
-  const pageAxisSign = dir === "rtl" ? 1 : -1;
+function manifestUrl(slug: string, lang: string): string {
+  return `/book-pages/${slug}/${lang}/manifest.json`;
+}
 
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const pagesRef = useRef<HTMLDivElement>(null);
+// This viewer's own chrome text (toolbar tooltips, panel headers, search
+// placeholder) -- a small, local counterpart to lib/uiLocale.ts's
+// site-wide dictionary rather than an extension of it. lib/uiLocale's
+// live-switch mechanism (applyUiLocaleToDom) works by rewriting
+// pre-rendered data-i18n-<locale> attributes on SERVER-rendered nodes; this
+// entire component is client-rendered and highly dynamic (toggling panels,
+// live search results), so wiring it into that same static-attribute
+// mechanism would mean re-deriving most of it anyway. This reads the UI
+// locale once, at mount -- consistent with the rest of the page at the
+// moment the reader opens, but (unlike the rest of the site's chrome) it
+// won't relabel itself live if the visitor flips the site language with
+// the Reader already open; they'll see the new language next time they
+// open a book. A reasonable gap, not a silent one -- worth knowing about if
+// it's ever reported as surprising.
+const VIEWER_STRINGS = {
+  en: {
+    loading: "Preparing pages…",
+    notReady: "This book hasn't been prepared for the flipbook viewer yet.",
+    prevPage: "Previous page",
+    nextPage: "Next page",
+    firstPage: "First page",
+    lastPage: "Last page",
+    zoomOut: "Zoom out",
+    zoomIn: "Zoom in",
+    contents: "Contents",
+    thumbnails: "Thumbnails",
+    search: "Search",
+    fullscreen: "Fullscreen",
+    exitFullscreen: "Exit fullscreen",
+    close: "Close",
+    searchPlaceholder: "Search this book…",
+    noResults: "No matches found.",
+    resultsCount: (n: number) => (n === 1 ? "1 match" : `${n} matches`),
+    page: "Page",
+  },
+  he: {
+    loading: "מכין עמודים…",
+    notReady: "הספר הזה עדיין לא הוכן לתצוגת ההפיכה.",
+    prevPage: "עמוד קודם",
+    nextPage: "עמוד הבא",
+    firstPage: "עמוד ראשון",
+    lastPage: "עמוד אחרון",
+    zoomOut: "הקטן",
+    zoomIn: "הגדל",
+    contents: "תוכן עניינים",
+    thumbnails: "תמונות ממוזערות",
+    search: "חיפוש",
+    fullscreen: "מסך מלא",
+    exitFullscreen: "צא ממסך מלא",
+    close: "סגור",
+    searchPlaceholder: "חיפוש בספר…",
+    noResults: "לא נמצאו התאמות.",
+    resultsCount: (n: number) => `${n} תוצאות`,
+    page: "עמוד",
+  },
+  ru: {
+    loading: "Подготовка страниц…",
+    notReady: "Эта книга ещё не подготовлена для просмотра в виде книги.",
+    prevPage: "Предыдущая страница",
+    nextPage: "Следующая страница",
+    firstPage: "Первая страница",
+    lastPage: "Последняя страница",
+    zoomOut: "Уменьшить",
+    zoomIn: "Увеличить",
+    contents: "Содержание",
+    thumbnails: "Миниатюры",
+    search: "Поиск",
+    fullscreen: "Во весь экран",
+    exitFullscreen: "Выйти из полноэкранного режима",
+    close: "Закрыть",
+    searchPlaceholder: "Поиск по книге…",
+    noResults: "Совпадений не найдено.",
+    resultsCount: (n: number) => `${n} совпадений`,
+    page: "Стр.",
+  },
+} as const;
 
-  const [pageWidth, setPageWidth] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+type Panel = "toc" | "thumbnails" | "search" | null;
+
+export default function Reader({ slug, lang, dir = "ltr", toc, title, author }: ReaderProps) {
+  const t = useMemo(() => VIEWER_STRINGS[readUiLocale()] ?? VIEWER_STRINGS.en, []);
+  const isRtl = dir === "rtl";
+
+  const [manifest, setManifest] = useState<PageManifest | null>(null);
+  const [manifestError, setManifestError] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
+  const [zoomIndex, setZoomIndex] = useState(0);
+  const [openPanel, setOpenPanel] = useState<Panel>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  // Maps a chapter's TOC anchor to the (0-based) virtual page it starts
-  // on, so the TOC panel can jump straight there. Recomputed alongside
-  // pagination in recalculate().
-  const [chapterPages, setChapterPages] = useState<Record<string, number>>({});
-  const [isTocOpen, setIsTocOpen] = useState(false);
-
-  // Rigid page-turn flip state -- see turnPage() below and the
-  // .flippingOutNext/.flippingInNext/etc. classes in Reader.module.css.
-  // null means no flip is in flight (the normal, resting state, including
-  // for every jumpToChapter TOC jump, which never touches this).
-  const [flipPhase, setFlipPhase] = useState<FlipPhase>(null);
-  const [flipDirection, setFlipDirection] = useState<"next" | "prev">("next");
-  const flipOutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flipInTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const touchStartX = useRef<number | null>(null);
-  const touchDeltaX = useRef(0);
-
-  // Guards the one-time restore of a saved reading position, so later
-  // recalculations (resize, etc.) only clamp the current page instead of
-  // re-applying the saved one over wherever the reader actually is.
+  const flipBookRef = useRef<HTMLFlipBook | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const hasRestoredPositionRef = useRef(false);
+  const positionKey = `${slug}:${lang}`;
 
-  // Next.js can reuse this component instance when navigating between two
-  // book pages (same route pattern), so slug changing is the signal to
-  // treat it as a fresh book rather than relying on remount.
-  const previousSlugRef = useRef(slug);
-
-  // Re-measure how many virtual pages the current content + column layout
-  // produces. Called on mount, on content change, on resize (width only --
-  // see the ResizeObserver below), and once images finish loading (since
-  // that changes column height/flow).
-  const recalculate = useCallback(() => {
-    const viewport = viewportRef.current;
-    const pages = pagesRef.current;
-    if (!viewport || !pages) return;
-
-    const width = viewport.clientWidth;
-    if (width === 0) return;
-
-    // Must run before any of the measurements below: it mutates the DOM
-    // (inserting/removing spacers), and every measurement here -- page
-    // count, chapter positions -- needs to reflect the corrected layout,
-    // not the pre-correction one. See enforceChapterPageStarts for why
-    // this can't just be a CSS rule.
-    enforceChapterPageStarts(pages, slug, contentHash);
-
-    setPageWidth(width);
-
-    const pageCount = Math.max(1, Math.round(pages.scrollWidth / width));
-    setTotalPages(pageCount);
-
-    // Locate each chapter heading's virtual page. `offsetLeft` is measured
-    // relative to the (non-scrolling) `pages` column box and is unaffected
-    // by whatever `transform` is currently applied to it, so this doesn't
-    // need to touch `currentPage` at all. It IS affected by reading
-    // direction though: LTR columns overflow rightward, so a heading N
-    // pages in sits at offsetLeft ~= N * width (positive) further than the
-    // FIRST page's offsetLeft. RTL columns overflow leftward, so the same
-    // heading sits at offsetLeft ~= N * width further negative.
-    //
-    // "Further than the first page's offsetLeft" matters: offsetLeft
-    // isn't zero at page 0. The very first column (the cover -- see
-    // buildCoverPageHtml in lib/books.ts, always prepended) sits wherever
-    // the browser places the un-transformed box's first column, which at
-    // desktop width (two columns per page) lands around half a page-width
-    // in, not 0. Dividing raw offsetLeft by width without subtracting that
-    // baseline first rounds every early heading down by roughly half a
-    // page -- invisible for a heading dozens of pages in, where that fixed
-    // offset is negligible, but it was rounding chapter 1 (which starts on
-    // page 1, right after the cover-only page 0) back down to page 0.
-    // firstColumnOffsetLeft is that baseline, read once from the same
-    // reference element (the cover) enforceChapterPageStarts uses for its
-    // own column-index math above.
-    const headings = pages.querySelectorAll<HTMLElement>('[id^="chapter-"]');
-    const contentRoot = getBookContentRoot(pages);
-    const firstColumnOffsetLeft = contentRoot ? contentRoot.offsetLeft : 0;
-    const positions: Record<string, number> = {};
-    headings.forEach((heading) => {
-      const pageIndex = Math.round(
-        Math.abs(heading.offsetLeft - firstColumnOffsetLeft) / width,
-      );
-      positions[heading.id] = Math.min(Math.max(pageIndex, 0), pageCount - 1);
-    });
-    setChapterPages(positions);
-
-    if (!hasRestoredPositionRef.current) {
-      hasRestoredPositionRef.current = true;
-      const savedPage = readReadingPosition(slug);
-      setCurrentPage(
-        savedPage !== null ? Math.min(Math.max(savedPage, 0), pageCount - 1) : 0,
-      );
-    } else {
-      setCurrentPage((prev) => Math.min(prev, pageCount - 1));
-    }
-    // contentHash is a dependency (not just read via closure) because
-    // enforceChapterPageStarts uses it as the pagination cache key -- this
-    // callback has to be recreated whenever it changes so a stale render's
-    // hash is never used to key a fresh render's content.
-  }, [slug, contentHash]);
-
-  useIsomorphicLayoutEffect(() => {
-    if (previousSlugRef.current !== slug) {
-      previousSlugRef.current = slug;
-      hasRestoredPositionRef.current = false;
-
-      // A flip in flight belongs to the PREVIOUS book -- Next.js reusing
-      // this component instance across a same-route navigation (see the
-      // previousSlugRef comment above) shouldn't let that old animation's
-      // timers fire against the new book's pages.
-      if (flipOutTimeoutRef.current) clearTimeout(flipOutTimeoutRef.current);
-      if (flipInTimeoutRef.current) clearTimeout(flipInTimeoutRef.current);
-      setFlipPhase(null);
-    }
-    recalculate();
-  }, [recalculate, contentHash, slug]);
-
-  // Belt-and-suspenders cleanup for the flip timers on unmount (the
-  // slug-change branch above only fires on a same-route reuse, not a real
-  // unmount).
+  // Load the generated manifest once per (slug, lang). A book that hasn't
+  // been through the offline page-image generation pass yet has no
+  // manifest.json at all -- that 404 is expected for a freshly-added book,
+  // not a bug, so it's surfaced as "not ready" rather than a console error.
   useEffect(() => {
+    let cancelled = false;
+    setManifest(null);
+    setManifestError(false);
+    hasRestoredPositionRef.current = false;
+
+    fetch(manifestUrl(slug, lang))
+      .then((res) => {
+        if (!res.ok) throw new Error(`manifest ${res.status}`);
+        return res.json();
+      })
+      .then((data: PageManifest) => {
+        if (!cancelled) setManifest(data);
+      })
+      .catch(() => {
+        if (!cancelled) setManifestError(true);
+      });
+
     return () => {
-      if (flipOutTimeoutRef.current) clearTimeout(flipOutTimeoutRef.current);
-      if (flipInTimeoutRef.current) clearTimeout(flipInTimeoutRef.current);
+      cancelled = true;
     };
+  }, [slug, lang]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === wrapperRef.current);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
-  // Persist the reading position once it's been restored (so this never
-  // overwrites the saved page with 0 before the restore above runs).
+  const goToPage = useCallback((index: number) => {
+    flipBookRef.current?.pageFlip().turnToPage(index);
+  }, []);
+
+  // Deliberately direction-agnostic: "next"/"prev" always mean forward/back
+  // in READING order (turnToNextPage/turnToPrevPage on the underlying
+  // library), regardless of dir. The library's own page index therefore
+  // never needs flipping for RTL -- only which PHYSICAL button and arrow
+  // key trigger which of these two does (see the JSX below and
+  // handleKeyDown), and how the book is drawn (see the ReaderProps.dir
+  // comment on the mirroring trick). Keeping the index itself
+  // direction-agnostic is what lets TOC jumps, thumbnails, search results,
+  // and the saved reading position all just be a page NUMBER, with no
+  // separate RTL bookkeeping anywhere else in this component.
+  const goNext = useCallback(() => flipBookRef.current?.pageFlip().flipNext(), []);
+  const goPrev = useCallback(() => flipBookRef.current?.pageFlip().flipPrev(), []);
+
   useEffect(() => {
-    if (!hasRestoredPositionRef.current) return;
-    writeReadingPosition(slug, currentPage);
-  }, [slug, currentPage]);
-
-  // Recalculate on viewport resize (orientation change, window resize,
-  // sidebar toggling, etc) -- but only when the WIDTH actually changes.
-  // recalculate() re-measures `pages.scrollWidth` over the entire book's
-  // multi-column layout, which for a long book is many thousands of DOM
-  // nodes wide -- not free. Mobile browsers fire ResizeObserver on their
-  // own viewport just from the URL bar showing/hiding as the page is
-  // scrolled or touched, which changes only the HEIGHT, not the width,
-  // and doesn't require re-pagination at all (column height is fixed via
-  // --reader-height, and column-fill: auto already reflows within that).
-  // Reacting to those height-only events was the main remaining cause of
-  // "it takes a long time to move between pages" -- every scroll on
-  // mobile was silently triggering a full recount.
-  const lastObservedWidthRef = useRef<number | null>(null);
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || typeof ResizeObserver === "undefined") return;
-
-    let frame = 0;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-
-      const width = entry.contentRect.width;
-      if (lastObservedWidthRef.current === width) return;
-      lastObservedWidthRef.current = width;
-
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(recalculate);
-    });
-    observer.observe(viewport);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [recalculate]);
-
-  // Images loading in after initial layout can change how content flows
-  // into columns, so recount once each one is ready. Debounced: a book's
-  // images tend to finish loading in a burst right after mount, and
-  // recalculate() is no longer cheap now that it also re-runs
-  // enforceChapterPageStarts -- reacting to each image individually would
-  // mean paying that cost once per image instead of once for the whole
-  // burst.
-  useEffect(() => {
-    const images = pagesRef.current?.querySelectorAll("img") ?? [];
-    const pending = Array.from(images).filter((img) => !img.complete);
-    if (pending.length === 0) return;
-
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRecalculate = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(recalculate, 200);
-    };
-
-    pending.forEach((img) => img.addEventListener("load", scheduleRecalculate));
-    return () => {
-      if (timer) clearTimeout(timer);
-      pending.forEach((img) => img.removeEventListener("load", scheduleRecalculate));
-    };
-  }, [recalculate, contentHash]);
-
-  const goToPage = useCallback(
-    (index: number) => {
-      setCurrentPage(Math.min(Math.max(index, 0), totalPages - 1));
-    },
-    [totalPages],
-  );
-
-  // Drives the rigid page-turn flip (see the FLIP_PHASE_MS / FlipPhase
-  // comment above and the .flippingOutNext/etc. classes in
-  // Reader.module.css). delta is +1 for next, -1 for prev; goNext/goPrev
-  // below are the only callers, so this is what every input method
-  // (buttons, arrow keys, click zones, swipe) actually goes through.
-  //
-  // Deliberately does NOT touch currentPage itself until the out phase has
-  // finished -- goToPage is called from inside the setTimeout below, at
-  // the out/in boundary, so the actual page content only ever changes
-  // while .viewport is edge-on (~90deg) and therefore invisible. This is
-  // also why jumpToChapter (TOC jumps) calls goToPage directly instead of
-  // turnPage: a jump can land many pages away from a chapter start, which
-  // would make "turning" a physically strange animation to sit through,
-  // and it was excluded from the flip requirement (this only covers
-  // sequential next/prev turns).
-  const turnPage = useCallback(
-    (delta: 1 | -1) => {
-      const target = Math.min(Math.max(currentPage + delta, 0), totalPages - 1);
-      if (target === currentPage) return; // already at an edge -- nothing to turn to
-
-      // A flip is a single physical gesture -- ignore a new request that
-      // arrives mid-flight rather than queueing or restarting it, so a
-      // fast double-tap on the next button can't desync the out/in timers
-      // from which page is actually showing.
-      if (flipPhase !== null) return;
-
-      if (
-        typeof window !== "undefined" &&
-        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-      ) {
-        goToPage(target);
+    if (!manifest) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenPanel(null);
         return;
       }
-
-      setFlipDirection(delta === 1 ? "next" : "prev");
-      setFlipPhase("out");
-
-      flipOutTimeoutRef.current = setTimeout(() => {
-        goToPage(target);
-        setFlipPhase("in");
-
-        flipInTimeoutRef.current = setTimeout(() => {
-          setFlipPhase(null);
-        }, FLIP_PHASE_MS);
-      }, FLIP_PHASE_MS);
-    },
-    [currentPage, totalPages, flipPhase, goToPage],
-  );
-
-  const goNext = useCallback(() => turnPage(1), [turnPage]);
-  const goPrev = useCallback(() => turnPage(-1), [turnPage]);
-
-  const jumpToChapter = useCallback(
-    (anchor: string) => {
-      const pageIndex = chapterPages[anchor];
-      if (pageIndex !== undefined) goToPage(pageIndex);
-      setIsTocOpen(false);
-    },
-    [chapterPages, goToPage],
-  );
-
-  // Keyboard navigation (accessibility / desktop convenience).
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && isTocOpen) {
-        setIsTocOpen(false);
-        return;
-      }
-      if (event.key === "ArrowRight") goNext();
-      if (event.key === "ArrowLeft") goPrev();
+      const forwardKey = isRtl ? "ArrowLeft" : "ArrowRight";
+      const backwardKey = isRtl ? "ArrowRight" : "ArrowLeft";
+      if (event.key === forwardKey) goNext();
+      else if (event.key === backwardKey) goPrev();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [goNext, goPrev, isTocOpen]);
+  }, [manifest, isRtl, goNext, goPrev]);
 
-  // Click navigation: tap/click the left edge to go back, the right edge
-  // to go forward -- the standard e-reader convention.
-  const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-
-    const { left, width } = viewport.getBoundingClientRect();
-    const clickX = event.clientX - left;
-
-    if (clickX < width * 0.3) {
-      goPrev();
-    } else if (clickX > width * 0.7) {
-      goNext();
+  const handleInit = useCallback(() => {
+    if (hasRestoredPositionRef.current || !manifest) return;
+    hasRestoredPositionRef.current = true;
+    const saved = readReadingPosition(positionKey);
+    if (saved !== null && saved > 0 && saved < manifest.pageCount) {
+      goToPage(saved);
     }
-  };
+  }, [manifest, positionKey, goToPage]);
 
-  // Swipe navigation.
-  const handleTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
-    touchStartX.current = event.touches[0].clientX;
-    touchDeltaX.current = 0;
-  };
+  const handleFlip = useCallback(
+    (index: number) => {
+      setCurrentPage(index);
+      writeReadingPosition(positionKey, index);
+    },
+    [positionKey],
+  );
 
-  const handleTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (touchStartX.current === null) return;
-    touchDeltaX.current = event.touches[0].clientX - touchStartX.current;
-  };
-
-  const handleTouchEnd = () => {
-    if (touchStartX.current === null) return;
-
-    if (touchDeltaX.current > SWIPE_THRESHOLD_PX) {
-      goPrev();
-    } else if (touchDeltaX.current < -SWIPE_THRESHOLD_PX) {
-      goNext();
+  const toggleFullscreen = useCallback(() => {
+    if (!wrapperRef.current) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      wrapperRef.current.requestFullscreen().catch(() => {
+        // Fullscreen can be denied by the browser/OS for reasons outside
+        // this component's control (permissions policy, user gesture
+        // requirements not met, etc.) -- there's nothing useful to do here
+        // beyond simply not entering fullscreen.
+      });
     }
+  }, []);
 
-    touchStartX.current = null;
-    touchDeltaX.current = 0;
+  const togglePanel = (panel: Exclude<Panel, null>) => {
+    setOpenPanel((current) => (current === panel ? null : panel));
   };
 
+  const zoom = ZOOM_STEPS[zoomIndex];
   const hasToc = Boolean(toc && toc.length > 0);
 
-  // See the .flippingOutNext/.flippingInNext/.flippingOutPrev/.flippingInPrev
-  // comment in Reader.module.css: which class applies depends on both the
-  // phase (out vs in) and the direction (next vs prev) of the in-flight
-  // flip, and is empty once flipPhase is back to null (the resting state).
-  const flipClassName =
-    flipPhase === "out"
-      ? flipDirection === "next"
-        ? styles.flippingOutNext
-        : styles.flippingOutPrev
-      : flipPhase === "in"
-        ? flipDirection === "next"
-          ? styles.flippingInNext
-          : styles.flippingInPrev
-        : "";
+  const searchResults = useMemo(() => {
+    if (!manifest || searchQuery.trim().length < 2) return [];
+    const needle = searchQuery.trim().toLowerCase();
+    const results: { page: number; snippet: string }[] = [];
+    manifest.pageText.forEach((text, index) => {
+      const haystack = text.toLowerCase();
+      const at = haystack.indexOf(needle);
+      if (at === -1) return;
+      const start = Math.max(0, at - 30);
+      const end = Math.min(text.length, at + needle.length + 30);
+      const snippet = `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+      results.push({ page: index, snippet });
+    });
+    return results.slice(0, 100);
+  }, [manifest, searchQuery]);
+
+  const handleWrapperKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Prevent arrow keys from also scrolling an ancestor page while a panel
+    // input has focus (e.g. typing in the search box) -- the global
+    // keydown listener above already owns page-turning.
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.stopPropagation();
+    }
+  };
+
+  if (manifestError) {
+    return (
+      <div className={styles.notReady} dir={dir}>
+        {t.notReady}
+      </div>
+    );
+  }
+
+  if (!manifest) {
+    return (
+      <div className={styles.loading} dir={dir}>
+        {t.loading}
+      </div>
+    );
+  }
+
+  const flipMirrorClass = isRtl ? styles.rtlFlip : "";
+  const pageMirrorClass = isRtl ? styles.rtlPage : "";
 
   return (
-    <div className={styles.wrapper}>
-      {hasToc && (
-        <div className={styles.tocBar}>
-          <button
-            type="button"
-            className={styles.tocToggle}
-            onClick={() => setIsTocOpen((open) => !open)}
-            aria-expanded={isTocOpen}
-            aria-controls="reader-toc-panel"
+    <div
+      ref={wrapperRef}
+      className={`${styles.wrapper} ${isFullscreen ? styles.wrapperFullscreen : ""}`}
+      dir="ltr"
+      onKeyDown={handleWrapperKeyDown}
+    >
+      <div className={styles.topBar}>
+        <div className={styles.topBarTitle}>
+          <span className={styles.topBarBook}>{title}</span>
+          <span className={styles.topBarAuthor}>{author}</span>
+        </div>
+        <button
+          type="button"
+          className={styles.searchToggle}
+          onClick={() => togglePanel("search")}
+          aria-expanded={openPanel === "search"}
+          aria-label={t.search}
+        >
+          <SearchIcon />
+        </button>
+      </div>
+
+      <div className={styles.stage}>
+        <button
+          type="button"
+          className={`${styles.edgeButton} ${styles.edgeButtonStart}`}
+          onClick={isRtl ? goNext : goPrev}
+          aria-label={isRtl ? t.nextPage : t.prevPage}
+        >
+          <ChevronIcon direction="start" />
+        </button>
+
+        <div className={`${styles.flipStage} ${flipMirrorClass}`} style={{ "--zoom": zoom } as CSSProperties}>
+          <HTMLFlipBook
+            ref={flipBookRef}
+            width={PAGE_WIDTH}
+            height={PAGE_HEIGHT}
+            size="stretch"
+            minWidth={280}
+            maxWidth={1400}
+            minHeight={396}
+            maxHeight={1980}
+            showCover
+            usePortrait
+            mobileScrollSupport
+            drawShadow
+            className={styles.flipBook}
+            onFlip={(e: { data: number }) => handleFlip(e.data)}
+            onInit={handleInit}
           >
-            Contents
-          </button>
+            {Array.from({ length: manifest.pageCount }, (_, index) => (
+              <div key={index} className={styles.page}>
+                <img
+                  src={pageImageUrl(slug, lang, index)}
+                  alt=""
+                  className={`${styles.pageImage} ${pageMirrorClass}`}
+                  loading={index < 4 ? "eager" : "lazy"}
+                  draggable={false}
+                />
+              </div>
+            ))}
+          </HTMLFlipBook>
+        </div>
+
+        <button
+          type="button"
+          className={`${styles.edgeButton} ${styles.edgeButtonEnd}`}
+          onClick={isRtl ? goPrev : goNext}
+          aria-label={isRtl ? t.prevPage : t.nextPage}
+        >
+          <ChevronIcon direction="end" />
+        </button>
+      </div>
+
+      {openPanel === "toc" && hasToc && (
+        <SidePanel title={t.contents} onClose={() => setOpenPanel(null)} closeLabel={t.close} dir={dir}>
+          <ol className={styles.tocList}>
+            {toc!.map((entry) => {
+              const page = manifest.chapterPages[entry.anchor];
+              return (
+                <li key={entry.anchor}>
+                  <button
+                    type="button"
+                    className={styles.tocEntry}
+                    onClick={() => {
+                      if (page !== undefined) goToPage(page);
+                      setOpenPanel(null);
+                    }}
+                    aria-current={page === currentPage ? "true" : undefined}
+                  >
+                    <span>{entry.label}</span>
+                    {page !== undefined && (
+                      <span className={styles.tocPageNum}>{page + 1}</span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </SidePanel>
+      )}
+
+      {openPanel === "search" && (
+        <SidePanel title={t.search} onClose={() => setOpenPanel(null)} closeLabel={t.close} dir={dir}>
+          <input
+            type="search"
+            className={styles.searchInput}
+            placeholder={t.searchPlaceholder}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            dir={dir}
+            autoFocus
+          />
+          {searchQuery.trim().length >= 2 && (
+            <div className={styles.searchMeta}>
+              {searchResults.length > 0 ? t.resultsCount(searchResults.length) : t.noResults}
+            </div>
+          )}
+          <ul className={styles.searchResults}>
+            {searchResults.map((result) => (
+              <li key={result.page}>
+                <button
+                  type="button"
+                  className={styles.searchResult}
+                  onClick={() => {
+                    goToPage(result.page);
+                    setOpenPanel(null);
+                  }}
+                >
+                  <span className={styles.searchResultPage}>
+                    {t.page} {result.page + 1}
+                  </span>
+                  <span className={styles.searchResultSnippet} dir={dir}>
+                    {result.snippet}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </SidePanel>
+      )}
+
+      {openPanel === "thumbnails" && (
+        <div className={styles.thumbSheet}>
+          <div className={styles.thumbSheetHeader}>
+            <span>{t.thumbnails}</span>
+            <button
+              type="button"
+              className={styles.thumbSheetClose}
+              onClick={() => setOpenPanel(null)}
+              aria-label={t.close}
+            >
+              &times;
+            </button>
+          </div>
+          <div className={styles.thumbGrid}>
+            {Array.from({ length: manifest.pageCount }, (_, index) => (
+              <button
+                key={index}
+                type="button"
+                className={`${styles.thumb} ${index === currentPage ? styles.thumbActive : ""}`}
+                onClick={() => {
+                  goToPage(index);
+                  setOpenPanel(null);
+                }}
+              >
+                <img
+                  src={pageImageUrl(slug, lang, index)}
+                  alt=""
+                  loading="lazy"
+                  draggable={false}
+                />
+                <span>{index + 1}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
-      <div className={styles.readerRow}>
-        <div
-          ref={viewportRef}
-          className={`${styles.viewport} ${flipClassName}`.trim()}
-          onClick={handleClick}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-        >
-          <div
-            ref={pagesRef}
-            className={`${styles.pages} ${flipPhase !== null ? styles.pagesNoTransition : ""}`.trim()}
-            style={{ transform: `translateX(${pageAxisSign * currentPage * pageWidth}px)` }}
+      <div className={styles.bottomBar}>
+        <div className={styles.bottomBarGroup}>
+          <button
+            type="button"
+            onClick={() => setZoomIndex((i) => Math.max(0, i - 1))}
+            disabled={zoomIndex === 0}
+            aria-label={t.zoomOut}
           >
-            {children}
-          </div>
+            <ZoomOutIcon />
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoomIndex((i) => Math.min(ZOOM_STEPS.length - 1, i + 1))}
+            disabled={zoomIndex === ZOOM_STEPS.length - 1}
+            aria-label={t.zoomIn}
+          >
+            <ZoomInIcon />
+          </button>
         </div>
 
-        {hasToc && (
-          <>
-            {isTocOpen && (
-              <button
-                type="button"
-                aria-label="Close table of contents"
-                className={styles.tocOverlay}
-                onClick={() => setIsTocOpen(false)}
-              />
-            )}
-            <nav
-              id="reader-toc-panel"
-              className={`${styles.tocPanel} ${isTocOpen ? styles.tocPanelOpen : ""}`}
-              aria-label="Table of contents"
-              dir={dir}
-            >
-              <div className={styles.tocHeader}>
-                <span className={styles.tocTitle}>Contents</span>
-                <button
-                  type="button"
-                  className={styles.tocClose}
-                  onClick={() => setIsTocOpen(false)}
-                  aria-label="Close table of contents"
-                >
-                  &times;
-                </button>
-              </div>
-              <ol className={styles.tocList}>
-                {toc!.map((entry) => (
-                  <li key={entry.anchor}>
-                    <button
-                      type="button"
-                      className={styles.tocEntry}
-                      onClick={() => jumpToChapter(entry.anchor)}
-                      aria-current={
-                        chapterPages[entry.anchor] === currentPage ? "true" : undefined
-                      }
-                    >
-                      {entry.label}
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            </nav>
-          </>
-        )}
-      </div>
+        <div className={styles.bottomBarGroup}>
+          <button
+            type="button"
+            onClick={() => goToPage(0)}
+            disabled={currentPage === 0}
+            aria-label={t.firstPage}
+          >
+            <ChevronIcon direction="start" double />
+          </button>
+          <button
+            type="button"
+            onClick={isRtl ? goNext : goPrev}
+            disabled={currentPage === 0}
+            aria-label={isRtl ? t.nextPage : t.prevPage}
+          >
+            <ChevronIcon direction="start" />
+          </button>
+          <span className={styles.pageIndicator} aria-live="polite">
+            {currentPage + 1} / {manifest.pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={isRtl ? goPrev : goNext}
+            disabled={currentPage === manifest.pageCount - 1}
+            aria-label={isRtl ? t.prevPage : t.nextPage}
+          >
+            <ChevronIcon direction="end" />
+          </button>
+          <button
+            type="button"
+            onClick={() => goToPage(manifest.pageCount - 1)}
+            disabled={currentPage === manifest.pageCount - 1}
+            aria-label={t.lastPage}
+          >
+            <ChevronIcon direction="end" double />
+          </button>
+        </div>
 
-      <div className={styles.controls} role="group" aria-label="Page navigation">
-        <button
-          type="button"
-          onClick={goPrev}
-          disabled={currentPage === 0}
-          aria-label="Previous page"
-        >
-          &larr;
-        </button>
-        <span className={styles.pageIndicator} aria-live="polite">
-          {currentPage + 1} / {totalPages}
-        </span>
-        <button
-          type="button"
-          onClick={goNext}
-          disabled={currentPage === totalPages - 1}
-          aria-label="Next page"
-        >
-          &rarr;
-        </button>
+        <div className={styles.bottomBarGroup}>
+          {hasToc && (
+            <button
+              type="button"
+              onClick={() => togglePanel("toc")}
+              aria-expanded={openPanel === "toc"}
+              aria-label={t.contents}
+            >
+              <ListIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => togglePanel("thumbnails")}
+            aria-expanded={openPanel === "thumbnails"}
+            aria-label={t.thumbnails}
+          >
+            <GridIcon />
+          </button>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            aria-pressed={isFullscreen}
+            aria-label={isFullscreen ? t.exitFullscreen : t.fullscreen}
+          >
+            <FullscreenIcon active={isFullscreen} />
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function SidePanel({
+  title,
+  onClose,
+  closeLabel,
+  dir,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  closeLabel: string;
+  dir: "rtl" | "ltr";
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.panelOverlay}
+        aria-label={closeLabel}
+        onClick={onClose}
+      />
+      <div className={styles.sidePanel} dir={dir}>
+        <div className={styles.sidePanelHeader}>
+          <span>{title}</span>
+          <button type="button" onClick={onClose} aria-label={closeLabel}>
+            &times;
+          </button>
+        </div>
+        <div className={styles.sidePanelBody}>{children}</div>
+      </div>
+    </>
+  );
+}
+
+// Small inline icon set -- kept local to this component rather than
+// pulling in an icon library dependency for a handful of glyphs, all of
+// which are simple enough to hand-write as plain SVG paths.
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <circle cx="8.5" cy="8.5" r="6" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ZoomOutIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <circle cx="8.5" cy="8.5" r="6" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="6" y1="8.5" x2="11" y2="8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ZoomInIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <circle cx="8.5" cy="8.5" r="6" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="8.5" y1="6" x2="8.5" y2="11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="6" y1="8.5" x2="11" y2="8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <line x1="3" y1="5" x2="17" y2="5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="3" y1="10" x2="17" y2="10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="3" y1="15" x2="17" y2="15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="11" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="3" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="11" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+function FullscreenIcon({ active }: { active: boolean }) {
+  return active ? (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <path
+        d="M7 3v3a1 1 0 0 1-1 1H3M13 3v3a1 1 0 0 0 1 1h3M7 17v-3a1 1 0 0 0-1-1H3M13 17v-3a1 1 0 0 1 1-1h3"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <path
+        d="M3 7V4a1 1 0 0 1 1-1h3M17 7V4a1 1 0 0 0-1-1h-3M3 13v3a1 1 0 0 0 1 1h3M17 13v3a1 1 0 0 1-1 1h-3"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ChevronIcon({
+  direction,
+  double = false,
+}: {
+  direction: "start" | "end";
+  double?: boolean;
+}) {
+  // "start"/"end" instead of "left"/"right": the wrapper is force-rendered
+  // dir="ltr" (see the Reader wrapper's own dir attribute) so the chrome
+  // itself never mirrors, but which SIDE of the screen "forward" is on
+  // still depends on the book's own direction -- callers pass "start" for
+  // whichever button should point toward the book's own beginning.
+  const points = direction === "start" ? "12,4 6,10 12,16" : "8,4 14,10 8,16";
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" aria-hidden="true">
+      <polyline
+        points={points}
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {double && (
+        <polyline
+          points={direction === "start" ? "16,4 10,10 16,16" : "4,4 10,10 4,16"}
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      )}
+    </svg>
   );
 }

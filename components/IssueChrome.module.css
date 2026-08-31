@@ -91,6 +91,20 @@
   padding: 3rem 1.5rem 2rem;
 }
 
+/* The Reader's own container -- deliberately NOT max-width: 880px like
+   .issueBody above. The hero (title/author reading line) still wants that
+   narrower column, but the flipbook viewer wants the actual available
+   screen width; capping it at 880px alongside a full hero + TOC preview
+   above it was the main reason the viewer read as "too small, not on all
+   the entire screen". 1400px matches Reader.tsx's own HTMLFlipBook
+   maxWidth, so the container is never the tighter constraint. */
+.readerSection {
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 2.5rem;
+}
+
 .indexBox {
   border: 1px solid var(--hairline);
   background: var(--paper-2);

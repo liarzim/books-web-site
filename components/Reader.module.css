@@ -1,356 +1,485 @@
-.wrapper {
-  --reader-height: 75vh;
-  --reader-gutter: 3rem;
+/*
+ * Dark flipbook viewer chrome -- deliberately its OWN fixed dark palette,
+ * not the site's --bg/--fg/--paper/--oxblood tokens from app/globals.css
+ * (which the rest of the site's light/dark/high-contrast theme toggle
+ * controls). This viewer is scoped to the Reader only, confirmed as a
+ * standing choice: it always looks like this regardless of the visitor's
+ * site theme preference, matching the FlipHTML5-style reference the
+ * redesign is modeled on.
+ */
 
+.wrapper {
+  --viewer-bg: #1c1c1c;
+  --viewer-bg-2: #262626;
+  --viewer-fg: #f2f2f2;
+  --viewer-muted: #a3a3a3;
+  --viewer-border: #3a3a3a;
+  --viewer-accent: #8ab4ff;
+
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-}
-
-.readerRow {
-  position: relative;
-
-  /* Perspective for .viewport's rigid rotateY page-turn (see
-     .flippingOutNext etc. below and turnPage() in Reader.tsx). This has to
-     live on the PARENT of the element being 3D-transformed, not on that
-     element itself -- perspective set directly on .viewport would only
-     apply to viewport's OWN children (.pages), not to viewport's own
-     transform, and the flip would render as a flat squash instead of a
-     page turning in real depth. */
-  perspective: 1800px;
-}
-
-.viewport {
-  position: relative;
-  width: 100%;
-  height: var(--reader-height);
-  min-height: 320px;
+  background: var(--viewer-bg);
+  color: var(--viewer-fg);
+  border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
-  /* Stop mobile browsers from hijacking horizontal swipes as back/forward
-     navigation, while still allowing normal vertical page scroll. */
-  touch-action: pan-y;
-  user-select: text;
-
-  /* No visible back face exists (there's nothing rendered "behind" the
-     current page -- the .flipping* classes below swap the actual content
-     via the existing translateX pagination while the box is edge-on and
-     invisible, not by revealing a mirrored reverse side), so this just
-     guards against a stray mirrored flash at the extreme angles. */
-  backface-visibility: hidden;
+  /* Was 70vh -- with the hero above still full-size (kept as-is) and the
+     redundant TOC preview box removed, this can claim most of the
+     remaining viewport instead of leaving a visibly small viewer boxed in
+     under a lot of empty dark chrome. Not 100vh: there's still a hero and
+     some page padding above this, so that would overflow the fold. */
+  min-height: 85vh;
+  isolation: isolate;
 }
 
-.pages {
-  height: 100%;
-  padding: 0 1rem;
-
-  /* Virtual pages: content flows into columns. A fixed viewport height plus
-     multi-column layout makes the browser generate extra "overflow columns"
-     to the right for any content that doesn't fit, rather than growing the
-     box's height -- that's what turns continuous text into swipeable pages. */
-  column-count: 1;
-  column-gap: var(--reader-gutter);
-  column-fill: auto;
-
-  transition: transform 300ms ease;
-  will-change: transform;
+.wrapperFullscreen {
+  min-height: 100vh;
+  border-radius: 0;
 }
 
-/* Suppresses .pages' own translateX transition while a rigid flip
-   (below) is in flight -- see turnPage() in Reader.tsx, which applies this
-   class for the whole out+in duration. Without it, the moment currentPage
-   actually changes (at the out/in swap, while the viewport is edge-on) the
-   translateX slide would run its own separate 300ms animation underneath
-   the rotation, finishing later than the flip and producing a visible
-   double-motion (page still sliding sideways after it's already "landed"
-   face-on). jumpToChapter's instant TOC jumps never apply this class, so
-   they keep the original smooth slide untouched. */
-.pagesNoTransition {
-  transition: none;
-}
-
-/* Rigid 3D page-turn: the whole .viewport (never .pages or the book
-   content itself) rotates edge-on and back, in two CSS-animation phases
-   that Reader.tsx's turnPage() times to meet at the invisible ~90deg
-   midpoint -- the actual page swap (the existing, untouched .pages
-   translateX, via goToPage) happens right there, while the box is edge-on,
-   so it's never seen mid-transform. Two separate phases/classes rather
-   than one continuous 0->90->0 keyframe because the content genuinely
-   changes partway through (old page for "out", new page for "in").
-   Durations here (260ms each) must match Reader.tsx's FLIP_PHASE_MS --
-   they're what times the content swap to actually land at the midpoint.
-
-   The hinge edge is tied to navigation direction (next vs prev), not to
-   the book's own reading direction (contrast with .pages' translateX sign,
-   which DOES depend on it -- see the ReaderProps.dir comment in
-   Reader.tsx): "next" always hinges left, "prev" always hinges right,
-   regardless of whether the book itself is LTR or RTL. This is chrome-level
-   page-turn *gesture* feedback, not a mirror of the book's own layout. */
-@keyframes flipOutNext {
-  from {
-    transform: rotateY(0deg);
-    filter: brightness(1);
-  }
-  to {
-    transform: rotateY(-90deg);
-    filter: brightness(0.72);
-  }
-}
-@keyframes flipInNext {
-  from {
-    transform: rotateY(90deg);
-    filter: brightness(0.72);
-  }
-  to {
-    transform: rotateY(0deg);
-    filter: brightness(1);
-  }
-}
-@keyframes flipOutPrev {
-  from {
-    transform: rotateY(0deg);
-    filter: brightness(1);
-  }
-  to {
-    transform: rotateY(90deg);
-    filter: brightness(0.72);
-  }
-}
-@keyframes flipInPrev {
-  from {
-    transform: rotateY(-90deg);
-    filter: brightness(0.72);
-  }
-  to {
-    transform: rotateY(0deg);
-    filter: brightness(1);
-  }
-}
-
-.flippingOutNext {
-  transform-origin: left center;
-  animation: flipOutNext 260ms ease-in forwards;
-  will-change: transform;
-}
-.flippingInNext {
-  transform-origin: left center;
-  animation: flipInNext 260ms ease-out forwards;
-  will-change: transform;
-}
-.flippingOutPrev {
-  transform-origin: right center;
-  animation: flipOutPrev 260ms ease-in forwards;
-  will-change: transform;
-}
-.flippingInPrev {
-  transform-origin: right center;
-  animation: flipInPrev 260ms ease-out forwards;
-  will-change: transform;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .flippingOutNext,
-  .flippingInNext,
-  .flippingOutPrev,
-  .flippingInPrev {
-    animation: none;
-  }
-  .pages {
-    transition: none;
-  }
-}
-
-@media (min-width: 768px) {
-  .pages {
-    column-count: 2;
-  }
-}
-
-/* Never slice a heading, paragraph, or image across a column break. */
-.pages h1,
-.pages h2,
-.pages h3,
-.pages p,
-.pages img {
-  break-inside: avoid;
-  -webkit-column-break-inside: avoid; /* Safari < 16 */
-  page-break-inside: avoid; /* legacy fallback */
-}
-
-.pages img {
-  max-width: 100%;
-  height: auto;
-  display: block;
-}
-
-/* Chapters are forced to start at the top of a fresh virtual page by JS
-   (see enforceChapterPageStarts in Reader.tsx), not by CSS. `break-before:
-   column` looks like the obvious tool for this, but empirically it is NOT
-   reliable on a real, long book: past a few hundred generated columns,
-   Chromium's multicol fragmentation silently drops most forced breaks in
-   a way that depends on exactly what content precedes each one -- it was
-   verified across the full real book that this left the majority of
-   chapters starting mid-page regardless of which break-before/-after
-   variant was used. The JS approach measures actual layout and inserts a
-   precisely-sized spacer, which is reliable regardless of surrounding
-   content. `margin-top: 0` here just makes "is this heading already at
-   the top of its column" an exact, zero-tolerance offsetTop check for
-   that JS rather than one that has to account for the browser's default
-   heading margin. */
-.pages h1 {
-  margin-top: 0;
-}
-
-.controls {
+.loading,
+.notReady {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
-}
-
-.controls button {
-  width: 2.5rem;
-  height: 2.5rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg);
-  font-size: 1rem;
-  cursor: pointer;
-}
-
-.controls button:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-.pageIndicator {
-  min-width: 4.5rem;
+  min-height: 40vh;
+  padding: 2rem;
   text-align: center;
-  font-size: 0.9rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-
-.tocBar {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.tocToggle {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg);
-  font-size: 0.85rem;
-  padding: 0.4rem 0.9rem;
-  cursor: pointer;
-}
-
-.tocToggle:hover {
-  background: var(--border);
-}
-
-/* Click-outside-to-close backdrop. A plain <button> (not a <div> with an
-   onClick) so it's keyboard/focus accessible without extra ARIA wiring. */
-.tocOverlay {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  padding: 0;
-  background: rgba(0, 0, 0, 0.25);
-  cursor: default;
-  z-index: 5;
-}
-
-/* Slide-in drawer, anchored to the physical right edge of the reader
-   regardless of the book's own text direction -- this is app chrome, not
-   book content, so it follows normal left-to-right UI convention. The
-   `dir` attribute is still set on it (from Reader.tsx) so the chapter
-   labels themselves align correctly when the book is RTL. */
-.tocPanel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(280px, 80vw);
-  overflow-y: auto;
-  background: var(--bg);
-  border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
-  transform: translateX(100%);
-  transition: transform 250ms ease;
-  z-index: 6;
-  padding: 1rem 0.5rem;
-}
-
-.tocPanelOpen {
-  transform: translateX(0);
-}
-
-/* Explicit close affordance inside the panel itself -- overlay-click and
-   Escape both already close it, but neither is obvious just by looking at
-   an open panel, especially on desktop with a mouse. This makes
-   "collapsible" visible, not just possible. */
-.tocHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0 0.5rem 0.5rem;
-  margin-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.tocTitle {
-  font-weight: 600;
+  background: #1c1c1c;
+  color: #a3a3a3;
+  border-radius: 8px;
   font-size: 0.95rem;
 }
 
-.tocClose {
-  border: 0;
+/* ---------------------------------------------------------------- top bar */
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--viewer-bg-2);
+  border-bottom: 1px solid var(--viewer-border);
+}
+
+.topBarTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topBarBook {
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topBarAuthor {
+  font-size: 0.82rem;
+  color: var(--viewer-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchToggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--viewer-border);
   background: transparent;
-  color: var(--muted);
-  font-size: 1.4rem;
-  line-height: 1;
-  padding: 0.15rem 0.5rem;
-  border-radius: 6px;
+  color: var(--viewer-fg);
   cursor: pointer;
 }
 
-.tocClose:hover {
-  background: var(--border);
-  color: var(--fg);
+.searchToggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* -------------------------------------------------------------------- stage */
+
+.stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.25rem 0.5rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.edgeButton {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--viewer-border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--viewer-fg);
+  cursor: pointer;
+  z-index: 1;
+}
+
+.edgeButton:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.flipStage {
+  --mirror: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  transform: scale(var(--zoom, 1)) scaleX(var(--mirror));
+  transform-origin: center;
+  transition: transform 160ms ease;
+}
+
+.rtlFlip {
+  --mirror: -1;
+}
+
+.flipBook {
+  background: #050505;
+}
+
+.page {
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.pageImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #ffffff;
+  user-select: none;
+}
+
+.rtlPage {
+  transform: scaleX(-1);
+}
+
+/* --------------------------------------------------------------- side panels */
+
+.panelOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.sidePanel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  inset-inline-start: 0;
+  width: min(320px, 82vw);
+  background: var(--viewer-bg-2);
+  border-inline-end: 1px solid var(--viewer-border);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidePanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--viewer-border);
+  font-weight: 600;
+}
+
+.sidePanelHeader button {
+  background: transparent;
+  border: none;
+  color: var(--viewer-fg);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+}
+
+.sidePanelBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 0;
 }
 
 .tocList {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
 }
 
 .tocEntry {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   width: 100%;
-  text-align: inherit;
-  border: 0;
+  padding: 0.55rem 1rem;
   background: transparent;
-  color: var(--fg);
-  font-size: 0.9rem;
-  line-height: 1.4;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
+  border: none;
+  color: var(--viewer-fg);
+  text-align: start;
+  font-size: 0.88rem;
   cursor: pointer;
 }
 
 .tocEntry:hover {
-  background: var(--border);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .tocEntry[aria-current="true"] {
+  background: rgba(138, 180, 255, 0.15);
+  color: var(--viewer-accent);
+}
+
+.tocPageNum {
+  flex-shrink: 0;
+  color: var(--viewer-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+
+.searchInput {
+  display: block;
+  width: calc(100% - 2rem);
+  margin: 0.5rem 1rem 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--viewer-border);
+  background: var(--viewer-bg);
+  color: var(--viewer-fg);
+  font-size: 0.9rem;
+}
+
+.searchInput:focus {
+  outline: 2px solid var(--viewer-accent);
+  outline-offset: 1px;
+}
+
+.searchMeta {
+  padding: 0 1rem 0.5rem;
+  color: var(--viewer-muted);
+  font-size: 0.8rem;
+}
+
+.searchResults {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.searchResult {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--viewer-border);
+  color: var(--viewer-fg);
+  text-align: start;
+  cursor: pointer;
+}
+
+.searchResult:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.searchResultPage {
+  font-size: 0.75rem;
+  color: var(--viewer-accent);
   font-weight: 600;
-  color: var(--accent);
+}
+
+.searchResultSnippet {
+  font-size: 0.82rem;
+  color: var(--viewer-muted);
+  line-height: 1.4;
+}
+
+/* ------------------------------------------------------------- thumbnails */
+
+.thumbSheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: min(46vh, 420px);
+  background: var(--viewer-bg-2);
+  border-top: 1px solid var(--viewer-border);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+}
+
+.thumbSheetHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--viewer-border);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.thumbSheetClose {
+  background: transparent;
+  border: none;
+  color: var(--viewer-fg);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+}
+
+.thumbGrid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 0.6rem;
+  padding: 0.75rem;
+}
+
+.thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem;
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.thumb img {
+  width: 100%;
+  aspect-ratio: 960 / 1360;
+  object-fit: contain;
+  background: #ffffff;
+  display: block;
+}
+
+.thumb span {
+  font-size: 0.72rem;
+  color: var(--viewer-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.thumb:hover {
+  border-color: var(--viewer-border);
+}
+
+.thumbActive {
+  border-color: var(--viewer-accent);
+}
+
+.thumbActive span {
+  color: var(--viewer-accent);
+}
+
+/* --------------------------------------------------------------- bottom bar */
+
+.bottomBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  background: var(--viewer-bg-2);
+  border-top: 1px solid var(--viewer-border);
+}
+
+.bottomBarGroup {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.bottomBar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--viewer-fg);
+  cursor: pointer;
+}
+
+.bottomBar button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--viewer-border);
+}
+
+.bottomBar button:disabled {
+  color: var(--viewer-muted);
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pageIndicator {
+  min-width: 4.5rem;
+  text-align: center;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--viewer-muted);
+  padding: 0 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .topBarAuthor {
+    display: none;
+  }
+
+  .sidePanel {
+    width: 100%;
+  }
+
+  .edgeButton {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .edgeButtonStart {
+    inset-inline-start: 0.25rem;
+  }
+
+  .edgeButtonEnd {
+    inset-inline-end: 0.25rem;
+  }
 }

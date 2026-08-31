@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import Reader from "@/components/Reader";
 import IssueHero from "@/components/IssueHero";
-import IssueIndexPreview from "@/components/IssueIndexPreview";
 import { getBookBySlug, getBookLanguages, getBookSlugs } from "@/lib/books";
 import { bookDir } from "@/lib/rtl";
 import styles from "@/components/IssueChrome.module.css";
@@ -63,22 +62,42 @@ export default async function BookIssuePage({ params }: PageProps) {
         currentLang={lang}
       />
 
-      <div className={styles.issueBody}>
-        <IssueIndexPreview toc={book.toc} />
+      {/* IssueIndexPreview (a standalone TOC preview box) used to live here,
+          between the hero and the Reader -- it's gone now that the Reader
+          has its own TOC/search side panel covering the same job, so
+          keeping both meant showing the table of contents twice before a
+          visitor even reached the book. */}
 
-        {/* Markdown body, parsed with gray-matter + rendered to HTML with
-            remark in lib/books.ts, then paginated into virtual pages here.
-            Passed as `children` (a Server Component subtree), not a string
-            prop -- see the ReaderProps.children comment in Reader.tsx for
-            why: a large book's HTML otherwise gets embedded twice in the
-            page payload (once in the SSR'd HTML, once again in the
-            RSC/Flight hydration data a "use client" component's string
-            props are serialized into). The data-book-content marker is how
-            Reader.tsx finds this div again from inside `.pages` once it's
-            rendered as an opaque child instead of a prop it can inspect. */}
-        <Reader slug={slug} dir={dir} toc={book.toc} contentHash={book.contentHash}>
-          <div data-book-content dangerouslySetInnerHTML={{ __html: book.contentHtml }} />
-        </Reader>
+      {/* readerSection is deliberately its OWN wider container, not
+          styles.issueBody (max-width: 880px) -- that width is right for the
+          hero's title/author reading line and was right for the old
+          issueBody TOC box, but it starved the flipbook of the screen width
+          it actually has to work with. The hero above keeps its own
+          880px-capped look; only the Reader gets the fuller-bleed
+          container. */}
+      <div className={styles.readerSection}>
+        {/* Phase 3b: the book's pages are pre-rendered to images by an
+            offline generation pipeline (not part of this build -- see
+            public/book-pages/<slug>/<lang>/), and Reader fetches that
+            manifest client-side rather than receiving live HTML content.
+            book.contentHtml (still computed above, for metadata/other
+            consumers) is intentionally NOT threaded through here anymore --
+            the elaborate `children`-prop-not-string-prop technique this
+            replaced existed solely to avoid double-serializing that HTML
+            into the page payload, so now that Reader has no use for the
+            HTML at all, the right fix is to stop computing that cost here
+            rather than pass it through unused. TOC LABELS still come from
+            here (book.toc, hand-authored frontmatter) -- only the
+            per-chapter PAGE NUMBER comes from the generated manifest, see
+            the ReaderProps.toc comment in Reader.tsx. */}
+        <Reader
+          slug={slug}
+          lang={lang}
+          dir={dir}
+          toc={book.toc}
+          title={book.title}
+          author={book.author}
+        />
       </div>
     </article>
   );

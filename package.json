@@ -14,7 +14,8 @@
     "react-dom": "19.2.0",
     "gray-matter": "^4.0.3",
     "remark": "^15.0.1",
-    "remark-html": "^16.0.1"
+    "remark-html": "^16.0.1",
+    "react-pageflip": "^2.0.3"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
