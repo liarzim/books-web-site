@@ -288,7 +288,21 @@ export default function Reader({ slug, lang, dir = "ltr", toc, title, author }: 
 
     const getDistElement = (): HTMLElement | null => stage.querySelector(".stf__block");
 
-    const getPageFlip = () => flipBookRef.current?.pageFlip();
+    // react-pageflip's own type declarations only expose the handful of
+    // methods its React props use (turnToPage, flipNext, ...) -- not the
+    // PageFlip instance's startUserTouch/userMove/userStop, even though
+    // they're public at runtime (that's how the library's own UI.ts calls
+    // them). Cast through this narrow local type instead of `any` so the
+    // rest of this effect still gets real type checking on the coordinate
+    // shape.
+    type PageFlipTouchController = {
+      startUserTouch: (pos: { x: number; y: number }) => void;
+      userMove: (pos: { x: number; y: number }, isTouch: boolean) => void;
+      userStop: (pos: { x: number; y: number }, isSwipe?: boolean) => void;
+    };
+
+    const getPageFlip = (): PageFlipTouchController | undefined =>
+      flipBookRef.current?.pageFlip() as unknown as PageFlipTouchController | undefined;
 
     // Mirrors a client-space point into distElement-relative coordinates
     // with x flipped around the element's own horizontal center -- exactly
